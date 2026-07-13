@@ -1,0 +1,15 @@
+{
+  "name": "lingo-agent",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Agentic i18n Translation & Validation Pipeline",
+  "scripts": {
+    "dev:frontend": "pnpm --filter frontend dev",
+    "build:frontend": "pnpm --filter frontend build",
+    "dev:backend": "cd backend && uvicorn main:app --reload --port 9095 --host 0.0.0.0",
+    "start:backend": "cd backend && uvicorn main:app --port 9095 --host 0.0.0.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.2.2"
+  }
+}
