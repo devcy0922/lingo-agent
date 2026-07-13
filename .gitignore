@@ -1,0 +1,63 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+.venv
+venv/
+pip-log.txt
+pip-delete-this-directory.txt
+htmlcov/
+.tox/
+.nosenv/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.log
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+
+# Node / JS
+node_modules/
+/dist
+/frontend/dist
+.eslintcache
+*.local
+.pnpm-debug.log
+
+# Database
+/data/db.sqlite3
+/data/output/
+
+# OS
+.DS_Store
+.AppleDouble
+.LSOverride
+Thumbs.db
+
+# Env
+.env
+.env.local

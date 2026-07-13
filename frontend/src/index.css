@@ -1,0 +1,358 @@
+:root {
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+  line-height: 1.5;
+  font-weight: 400;
+
+  color-scheme: dark;
+  --bg-base: hsl(240, 10%, 4%);
+  --bg-surface: hsl(240, 10%, 9%);
+  --bg-surface-elevated: hsl(240, 10%, 14%);
+  
+  --border: hsl(240, 6%, 16%);
+  --border-focus: hsl(263, 70%, 50%);
+  
+  --primary: hsl(263, 70%, 50%);
+  --primary-hover: hsl(263, 70%, 60%);
+  --primary-active: hsl(263, 70%, 45%);
+  --primary-glow: rgba(138, 43, 226, 0.15);
+  
+  --success: hsl(142, 70%, 45%);
+  --success-glow: rgba(34, 197, 94, 0.15);
+  
+  --warning: hsl(38, 92%, 50%);
+  
+  --error: hsl(0, 84%, 60%);
+  --error-glow: rgba(239, 68, 68, 0.15);
+  
+  --text-main: hsl(0, 0%, 95%);
+  --text-muted: hsl(240, 5%, 65%);
+  
+  background-color: var(--bg-base);
+  color: var(--text-main);
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+  transition: background-color 0.2s, border-color 0.2s, box-shadow 0.2s;
+}
+
+body {
+  background-color: var(--bg-base);
+  color: var(--text-main);
+  min-height: 100vh;
+}
+
+/* Scrollbar styling */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: var(--bg-base);
+}
+::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--text-muted);
+}
+
+/* Layout */
+.app-container {
+  max-width: 1400px;
+  margin: 0 auto;
+  padding: 2rem;
+}
+
+header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 2.5rem;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 1.5rem;
+}
+
+.logo-section h1 {
+  font-size: 1.8rem;
+  font-weight: 700;
+  background: linear-gradient(135deg, #a78bfa, #8b5cf6, #ec4899);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+
+.logo-section p {
+  color: var(--text-muted);
+  font-size: 0.9rem;
+  margin-top: 0.2rem;
+}
+
+.main-grid {
+  display: grid;
+  grid-template-columns: 380px 1fr;
+  gap: 2rem;
+  align-items: start;
+}
+
+/* Card Styling */
+.card {
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 1.5rem;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.2);
+}
+
+.card h2 {
+  font-size: 1.2rem;
+  margin-bottom: 1.2rem;
+  font-weight: 600;
+  border-left: 3px solid var(--primary);
+  padding-left: 0.6rem;
+}
+
+/* Form Elements */
+.form-group {
+  margin-bottom: 1.2rem;
+}
+
+.form-group label {
+  display: block;
+  font-size: 0.85rem;
+  color: var(--text-muted);
+  margin-bottom: 0.5rem;
+  font-weight: 500;
+}
+
+textarea {
+  width: 100%;
+  height: 180px;
+  background: var(--bg-base);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text-main);
+  padding: 0.8rem;
+  font-family: 'Fira Code', source-code-pro, Menlo, Monaco, Consolas, monospace;
+  font-size: 0.85rem;
+  resize: vertical;
+}
+
+textarea:focus {
+  outline: none;
+  border-color: var(--border-focus);
+  box-shadow: 0 0 0 3px var(--primary-glow);
+}
+
+.checkbox-group {
+  display: flex;
+  gap: 1rem;
+  margin-top: 0.5rem;
+}
+
+.checkbox-label {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.9rem;
+  cursor: pointer;
+}
+
+.checkbox-label input {
+  accent-color: var(--primary);
+  width: 16px;
+  height: 16px;
+}
+
+/* Buttons */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.75rem 1.5rem;
+  font-size: 0.9rem;
+  font-weight: 600;
+  border-radius: 8px;
+  border: none;
+  cursor: pointer;
+  width: 100%;
+}
+
+.btn-primary {
+  background: var(--primary);
+  color: #fff;
+}
+
+.btn-primary:hover {
+  background: var(--primary-hover);
+  box-shadow: 0 0 15px var(--primary-glow);
+}
+
+.btn-primary:disabled {
+  background: var(--border);
+  color: var(--text-muted);
+  cursor: not-allowed;
+  box-shadow: none;
+}
+
+.btn-secondary {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text-main);
+}
+
+.btn-secondary:hover {
+  background: var(--bg-surface-elevated);
+}
+
+/* Job List & Status */
+.job-item {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 1rem;
+  margin-bottom: 0.8rem;
+  cursor: pointer;
+  background: var(--bg-surface);
+}
+
+.job-item:hover {
+  border-color: var(--border-focus);
+  background: var(--bg-surface-elevated);
+}
+
+.job-item.active {
+  border-color: var(--primary);
+  box-shadow: 0 0 10px var(--primary-glow);
+}
+
+.job-item-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 0.5rem;
+}
+
+.job-id {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  font-family: monospace;
+}
+
+.badge {
+  font-size: 0.75rem;
+  padding: 0.2rem 0.6rem;
+  border-radius: 20px;
+  font-weight: 600;
+}
+
+.badge-pending { background: var(--border); color: var(--text-muted); }
+.badge-translating { background: var(--primary-glow); color: #c084fc; border: 1px solid #a855f7; }
+.badge-validating { background: rgba(234, 179, 8, 0.15); color: #fef08a; border: 1px solid #eab308; }
+.badge-review_ready { background: rgba(59, 130, 246, 0.15); color: #93c5fd; border: 1px solid #3b82f6; }
+.badge-approved { background: var(--success-glow); color: #86efac; border: 1px solid #22c55e; }
+.badge-failed { background: var(--error-glow); color: #fca5a5; border: 1px solid #ef4444; }
+
+/* Dashboard Detail View */
+.detail-container {
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+}
+
+.tab-menu {
+  display: flex;
+  gap: 0.5rem;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 0.5rem;
+}
+
+.tab-btn {
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  padding: 0.5rem 1rem;
+  font-weight: 600;
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+}
+
+.tab-btn.active {
+  color: var(--primary-hover);
+  border-bottom-color: var(--primary);
+}
+
+/* Diff Viewer */
+.diff-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: 'Fira Code', monospace;
+  font-size: 0.85rem;
+  margin-top: 1rem;
+}
+
+.diff-row {
+  border-bottom: 1px solid var(--border);
+}
+
+.diff-cell {
+  padding: 0.5rem;
+  vertical-align: top;
+}
+
+.diff-cell.key {
+  width: 25%;
+  color: var(--text-muted);
+  font-weight: bold;
+}
+
+.diff-cell.src {
+  width: 37.5%;
+  background: rgba(239, 68, 68, 0.05);
+  border-left: 2px solid var(--error);
+}
+
+.diff-cell.tgt {
+  width: 37.5%;
+  background: rgba(34, 197, 94, 0.05);
+  border-left: 2px solid var(--success);
+}
+
+/* Thought Process Logs */
+.thought-timeline {
+  display: flex;
+  flex-direction: column;
+  gap: 0.8rem;
+  margin-top: 1rem;
+}
+
+.thought-step {
+  background: var(--bg-surface-elevated);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.8rem;
+}
+
+.thought-header {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  margin-bottom: 0.4rem;
+}
+
+.thought-msg {
+  font-size: 0.85rem;
+  color: var(--text-main);
+  white-space: pre-wrap;
+}
+
+.thought-critique {
+  font-size: 0.8rem;
+  background: rgba(0, 0, 0, 0.2);
+  padding: 0.4rem;
+  margin-top: 0.4rem;
+  border-radius: 4px;
+  color: var(--warning);
+}
