@@ -25,8 +25,7 @@ cp .env.example .env
 ```
 `.env` 파일을 편집하여 실제 LLM 게이트웨이 주소를 입력합니다.
 ```ini
-# 예: 맥미니(192.168.0.5) LiteLLM 경로
-LLM_GATEWAY_URL=http://192.168.0.5:8000/v1
+LLM_GATEWAY_URL=https://gateway.example.com/v1
 LLM_MODEL=meta-llama/Meta-Llama-3-8B-Instruct
 ```
 > **Tip**: 만약 LLM Gateway 통신에 실패하더라도 데모 구동이 끊어지지 않도록, 코드 레벨에서 자동으로 가짜 번역(Simulated Translation)으로 Fallback 처리되어 원활한 시연이 가능합니다.

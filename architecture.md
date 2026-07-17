@@ -64,7 +64,7 @@ graph TD
 ## 2. 핵심 아키텍처 의사결정 (Architectural Decisions)
 
 ### ① NGINX / PostgreSQL 인프라 배제 및 싱글 포트 SPA Catch-all 구성
-- **배경**: 데모 배포 시 NGINX 프록시와 PostgreSQL DB를 Compose로 띄우는 구조는 로컬 네트워크 환경(특히 192.168.x.x 대역의 포트 충돌 및 IP 변동)에서 오류를 빈번하게 유발합니다.
+- **배경**: 데모 배포 시 NGINX 프록시와 PostgreSQL DB를 Compose로 띄우는 구조는 개발망의 포트 충돌 및 주소 변동으로 오류를 빈번하게 유발합니다.
 - **결정**: 
   - FastAPI의 static mount 기능과 catch-all 라우터(`spa_fallback`)를 결합하여 **프론트엔드 빌드본(`dist`)을 백엔드가 단일 포트(9095)에서 직접 서빙**하도록 강제했습니다.
   - 데이터는 파일 기반인 **SQLite**를 사용해 영속성을 유지하되, SQLAlchemy 세션을 활용해 추후 엔터프라이즈 마이그레이션이 용이하도록 오알엠 레이어를 격리했습니다.
