@@ -1,0 +1,3 @@
+# LingoAgent 번역 CLI 최소 의존성
+# GitHub Action 환경에서 pip install -r requirements-translate.txt 로 설치
+httpx>=0.27.0
