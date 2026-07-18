@@ -183,7 +183,11 @@ def translate_with_llm(
                 }
             )
             resp.raise_for_status()
-            content = resp.json()["choices"][0]["message"]["content"].strip()
+            raw = resp.json()["choices"][0]["message"].get("content")
+            if raw is None:
+                # tool_calls 등으로 content가 null인 경우 → Fallback 처리
+                raise ValueError("LLM 응답 content가 null입니다 (tool_call 응답이거나 모델 오류)")
+            content = raw.strip()
 
             # Markdown 코드 블록 제거
             if "```json" in content:
@@ -258,16 +262,24 @@ def evaluate_quality(
                 json={
                     "model": LLM_MODEL,
                     "messages": [
-                        {"role": "system", "content": "You are a localization QA judge. Return JSON only."},
+                        {"role": "system", "content": "You are a localization QA judge. Respond with JSON: {\"score\": 0-100, \"critique\": \"one sentence\"}"},
                         {"role": "user",   "content": prompt},
                     ],
-                    "response_format": {"type": "json_object"},
+                    # response_format 미사용: GCP LiteLLM 프록시 호환성 문제
                     "temperature": 0.1,
                     "max_tokens": 256,
                 }
             )
             resp.raise_for_status()
-            content = resp.json()["choices"][0]["message"]["content"].strip()
+            raw = resp.json()["choices"][0]["message"].get("content")
+            if raw is None:
+                raise ValueError("QA 응답 content가 null입니다")
+            content = raw.strip()
+            # Markdown 블록 제거 후 JSON 파싱
+            if "```" in content:
+                content = content.split("```")[1].split("```")[0].strip()
+                if content.startswith("json"):
+                    content = content[4:].strip()
             qa_data = json.loads(content)
             return int(qa_data.get("score", 0)), qa_data.get("critique", "")
 
