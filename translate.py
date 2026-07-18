@@ -167,17 +167,19 @@ def translate_with_llm(
         headers["Authorization"] = f"Bearer {LLM_API_KEY}"
 
     try:
-        with httpx.Client(timeout=30.0) as client:
+        # GCP API Gateway 버퍼링 구조상 응답이 지연될 수 있으므로 넉넉히 설정
+        with httpx.Client(timeout=90.0) as client:
             resp = client.post(
                 f"{LLM_GATEWAY_URL}/chat/completions",
                 headers=headers,
                 json={
                     "model": LLM_MODEL,
                     "messages": [
-                        {"role": "system", "content": "You are a professional software localization system."},
+                        {"role": "system", "content": "You are a professional software localization system. Return only valid JSON."},
                         {"role": "user",   "content": prompt},
                     ],
                     "temperature": 0.2,
+                    "max_tokens": 4096,
                 }
             )
             resp.raise_for_status()
@@ -249,7 +251,7 @@ def evaluate_quality(
         headers["Authorization"] = f"Bearer {LLM_API_KEY}"
 
     try:
-        with httpx.Client(timeout=30.0) as client:
+        with httpx.Client(timeout=90.0) as client:
             resp = client.post(
                 f"{LLM_GATEWAY_URL}/chat/completions",
                 headers=headers,
@@ -261,6 +263,7 @@ def evaluate_quality(
                     ],
                     "response_format": {"type": "json_object"},
                     "temperature": 0.1,
+                    "max_tokens": 256,
                 }
             )
             resp.raise_for_status()
