@@ -179,7 +179,9 @@ def translate_with_llm(
                         {"role": "user",   "content": prompt},
                     ],
                     "temperature": 0.2,
-                    "max_tokens": 4096,
+                    # ko.json 56개 키 × 평균 30토큰 ≈ 1700토큰 출력 예상,
+                    # 일본어/중국어는 더 길어질 수 있으므로 충분히 설정
+                    "max_tokens": 8192,
                 }
             )
             resp.raise_for_status()
@@ -241,13 +243,23 @@ def evaluate_quality(
     if not LLM_GATEWAY_URL:
         return -1, "QA_UNAVAILABLE: LLM_GATEWAY_URL 미설정"
 
+    # QA 프롬프트를 짧게 유지하기 위해 샘플 5개만 사용
+    # (전체 JSON을 넣으면 프롬프트가 너무 길어 모델이 content=null로 응답)
+    try:
+        src_sample = json.loads(source_content)
+        tgt_sample = json.loads(translated_content)
+        sample_keys = list(src_sample.keys())[:5]
+        src_snippet = json.dumps({k: src_sample[k] for k in sample_keys}, ensure_ascii=False)
+        tgt_snippet = json.dumps({k: tgt_sample[k] for k in sample_keys if k in tgt_sample}, ensure_ascii=False)
+    except Exception:
+        src_snippet = source_content[:500]
+        tgt_snippet = translated_content[:500]
+
     prompt = (
-        f"You are a professional localization QA reviewer.\n"
-        f"Evaluate the translation from Korean to '{target_lang}'.\n\n"
-        f"Source (Korean):\n{source_content}\n\n"
-        f"Translation:\n{translated_content}\n\n"
-        f"Return JSON only:\n"
-        f'{{ "score": <0-100>, "critique": "<one sentence>" }}'
+        f"Rate this Korean→{target_lang} UI translation quality (sample of 5 keys).\n"
+        f"Source: {src_snippet}\n"
+        f"Translation: {tgt_snippet}\n"
+        f"Reply with JSON only: {{\"score\": 0-100, \"critique\": \"one sentence\"}}"
     )
 
     headers = {"Content-Type": "application/json"}
