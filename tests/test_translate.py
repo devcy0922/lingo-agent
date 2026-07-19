@@ -212,6 +212,32 @@ class QualityGateTests(unittest.TestCase):
         self.assertEqual("FAILED", review.status)
         self.assertIn("terminology 3점", review.critique)
 
+    def test_semantic_three_is_advisory_when_average_is_three_point_five(self):
+        response = json.dumps(
+            {
+                "results": [
+                    {
+                        "key": "section",
+                        "semantic_accuracy": 3,
+                        "naturalness": 4,
+                        "terminology": 4,
+                        "ui_fit": 3,
+                        "critical_errors": [],
+                        "critique": "더 명확하게 다듬을 수 있습니다.",
+                    }
+                ]
+            }
+        )
+        with patch.object(translate, "_chat_completion", return_value=response):
+            review = translate.evaluate_quality(
+                json.dumps({"section": "역할이 다른 공개 구현"}),
+                json.dumps({"section": "Distinct Public Implementations"}),
+                "en-US",
+            )
+
+        self.assertEqual("PASSED", review.status)
+        self.assertEqual(70, review.score)
+
     def test_pipeline_retries_only_failed_keys(self):
         source = {"title": "제목", "demo": "대표 데모"}
         first_translation = json.dumps(
