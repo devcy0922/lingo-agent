@@ -110,6 +110,36 @@ class QualityGateTests(unittest.TestCase):
         self.assertEqual(9, len(review.results))
         self.assertEqual(2, call.call_count)
 
+    def test_reviewer_retries_invalid_schema(self):
+        valid = json.dumps(
+            {
+                "results": [
+                    {
+                        "key": "title",
+                        "semantic_accuracy": 5,
+                        "naturalness": 5,
+                        "terminology": 5,
+                        "ui_fit": 5,
+                        "critical_errors": [],
+                        "critique": "",
+                    }
+                ]
+            }
+        )
+        with patch.object(
+            translate,
+            "_chat_completion",
+            side_effect=['{"score": 100}', valid],
+        ) as call:
+            review = translate.evaluate_quality(
+                json.dumps({"title": "제목"}),
+                json.dumps({"title": "Title"}),
+                "en-US",
+            )
+
+        self.assertEqual("PASSED", review.status)
+        self.assertEqual(2, call.call_count)
+
     def test_glossary_rejects_known_bad_translations(self):
         glossary = {
             "preserve": [],
