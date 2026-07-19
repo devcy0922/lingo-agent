@@ -27,6 +27,7 @@ LLM_MIN_REQUEST_INTERVAL_SECONDS = float(
     os.environ.get("LLM_MIN_REQUEST_INTERVAL_SECONDS", "0")
 )
 LLM_REQUEST_ATTEMPTS = 4
+REVIEW_SCHEMA_ATTEMPTS = 2
 MAX_ATTEMPTS = 3
 QA_BATCH_SIZE = 8
 QA_MIN_DIMENSION_SCORE = 4
@@ -447,7 +448,7 @@ def evaluate_quality(
             source_batch = _build_subset(source, set(batch_paths))
             target_batch = _build_subset(translated, set(batch_paths))
             expected_keys = [_path_label(path) for path in batch_paths]
-            prompt = (
+            base_prompt = (
                 f"Review every key in this Korean→{target_lang} UI translation batch.\n"
                 f"STYLE: {_language_style(target_lang)}\n"
                 f"EXPECTED_KEYS: {json.dumps(expected_keys, ensure_ascii=False)}\n"
@@ -455,32 +456,67 @@ def evaluate_quality(
                 f"GLOSSARY: {json.dumps(glossary or {}, ensure_ascii=False)}\n"
                 f"SOURCE: {json.dumps(source_batch, ensure_ascii=False)}\n"
                 f"TRANSLATION: {json.dumps(target_batch, ensure_ascii=False)}\n"
-                "Return JSON only with results. Each result must contain key, "
+                "Return JSON only. The top-level key must be exactly results. "
+                "Each result must contain key, "
                 "semantic_accuracy, naturalness, terminology, ui_fit (integers 1-5), "
-                "critical_errors (array), and critique."
+                "critical_errors (array), and critique. Example: "
+                '{"results":[{"key":"example.key","semantic_accuracy":5,'
+                '"naturalness":5,"terminology":5,"ui_fit":5,'
+                '"critical_errors":[],"critique":""}]}'
             )
-            content = _chat_completion(
-                REVIEW_MODEL,
-                [
-                    {
-                        "role": "system",
-                        "content": (
-                            "You are a strict native localization reviewer. "
-                            "Do not omit keys and do not inflate scores."
-                        ),
-                    },
-                    {"role": "user", "content": prompt},
-                ],
-                2048,
-            )
-            payload = json.loads(content)
-            results = payload.get("results")
-            if not isinstance(results, list):
-                raise ValueError("QA results 배열이 없습니다")
-            indexed = {item.get("key"): item for item in results if isinstance(item, dict)}
-            missing = set(expected_keys) - set(indexed)
-            if missing:
-                raise ValueError(f"QA가 키를 누락했습니다: {sorted(missing)}")
+            indexed: dict[str, JsonObject] | None = None
+            schema_error = ""
+            content = ""
+            for schema_attempt in range(1, REVIEW_SCHEMA_ATTEMPTS + 1):
+                prompt = base_prompt
+                if schema_error:
+                    prompt += (
+                        "\nYour previous response was invalid: "
+                        f"{schema_error}. Return the exact requested schema without prose."
+                    )
+                content = _chat_completion(
+                    REVIEW_MODEL,
+                    [
+                        {
+                            "role": "system",
+                            "content": (
+                                "You are a strict native localization reviewer. "
+                                "Do not omit keys, do not inflate scores, and use the exact JSON schema."
+                            ),
+                        },
+                        {"role": "user", "content": prompt},
+                    ],
+                    2048,
+                )
+                try:
+                    payload = json.loads(content)
+                    results = payload.get("results")
+                    if not isinstance(results, list):
+                        raise ValueError("top-level results 배열이 없습니다")
+                    candidate_indexed = {
+                        item.get("key"): item
+                        for item in results
+                        if isinstance(item, dict)
+                    }
+                    missing = set(expected_keys) - set(candidate_indexed)
+                    if missing:
+                        raise ValueError(f"키 누락: {sorted(missing)}")
+                    indexed = candidate_indexed
+                    break
+                except (json.JSONDecodeError, ValueError) as exc:
+                    schema_error = str(exc)
+                    logger.warning(
+                        "QA 스키마 불일치 — reviewer 재시도 (%d/%d): %s",
+                        schema_attempt,
+                        REVIEW_SCHEMA_ATTEMPTS,
+                        schema_error,
+                    )
+
+            if indexed is None:
+                response_shape = content[:300].replace("\n", " ")
+                raise ValueError(
+                    f"QA 스키마 재시도 실패: {schema_error}; response={response_shape}"
+                )
             all_results.extend(indexed[key] for key in expected_keys)
 
         scores: list[int] = []
