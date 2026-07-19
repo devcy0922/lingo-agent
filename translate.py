@@ -16,6 +16,7 @@ GitHub Action 또는 로컬 스크립트로 직접 호출합니다.
     LLM_GATEWAY_URL   — LLM 게이트웨이 주소 (필수)
     LLM_API_KEY       — API 키 (Optional, 게이트웨이가 요구하는 경우)
     LLM_MODEL         — 모델명 (기본값: auto)
+    LLM_TIMEOUT_SECONDS — Gateway Read Timeout 초 (기본값: 240)
 
 종료 코드:
     0  — 모든 번역 완료 (lint + QA 통과)
@@ -40,6 +41,7 @@ import httpx
 LLM_GATEWAY_URL = os.environ.get("LLM_GATEWAY_URL", "").rstrip("/")
 LLM_API_KEY     = os.environ.get("LLM_API_KEY", "")
 LLM_MODEL       = os.environ.get("LLM_MODEL", "auto")
+LLM_TIMEOUT_SECONDS = float(os.environ.get("LLM_TIMEOUT_SECONDS", "240"))
 QA_PASS_SCORE   = 85   # QA 합격 점수 컷오프
 MAX_ATTEMPTS    = 3    # 최대 재시도 횟수
 
@@ -167,8 +169,8 @@ def translate_with_llm(
         headers["Authorization"] = f"Bearer {LLM_API_KEY}"
 
     try:
-        # GCP API Gateway 버퍼링 구조상 응답이 지연될 수 있으므로 넉넉히 설정
-        with httpx.Client(timeout=90.0) as client:
+        # GCP API Gateway 버퍼링 시간을 실행 환경에 맞게 조정할 수 있도록 설정
+        with httpx.Client(timeout=LLM_TIMEOUT_SECONDS) as client:
             resp = client.post(
                 f"{LLM_GATEWAY_URL}/chat/completions",
                 headers=headers,
@@ -267,7 +269,7 @@ def evaluate_quality(
         headers["Authorization"] = f"Bearer {LLM_API_KEY}"
 
     try:
-        with httpx.Client(timeout=90.0) as client:
+        with httpx.Client(timeout=LLM_TIMEOUT_SECONDS) as client:
             resp = client.post(
                 f"{LLM_GATEWAY_URL}/chat/completions",
                 headers=headers,

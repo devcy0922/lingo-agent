@@ -79,6 +79,13 @@ graph TD
 - **배경**: 포트폴리오 시연 도중 네트워크 장애 또는 외부 LLM API(LiteLLM) 연동 실패로 인해 데모 전체가 마비되는 리스크가 존재합니다.
 - **결정**: LLM Gateway 연결 실패 시 예외를 잡아 내부 로컬 규칙 기반 번역 시뮬레이터(`simulate_fallback_translation`)로 자동 우회하도록 예외 처리 구조를 짰습니다. 외부 API 상태와 무관하게 프론트엔드 대시보드에서 에이전트가 돌고 승인되는 흐름은 언제나 완결성 있게 시연됩니다.
 
+### ④ 버퍼링 Gateway를 고려한 Timeout 계약
+- **배경**: GitHub Actions에서 GCP API Gateway를 거쳐 사설 LLM에 전체 Locale 번역을 요청하면, Gateway가 응답을 버퍼링하는 동안 고정 90초 Read Timeout을 초과할 수 있습니다. 이 경우 모델이 정상 추론 중이어도 Fallback으로 오판되어 번역 커밋이 차단됩니다.
+- **결정**:
+  - 번역과 QA 호출의 Timeout을 `LLM_TIMEOUT_SECONDS` 환경변수로 통합하고 기본값을 240초로 설정합니다.
+  - Fallback 번역은 계속 커밋 불가 상태로 유지해 장애 시 잘못된 번역이 배포되지 않도록 합니다.
+  - 실행 환경은 모델과 Gateway 지연 특성에 맞춰 Timeout만 조정할 수 있으며, 코드의 보안·품질 판정 기준은 변경하지 않습니다.
+
 ---
 
 ## 3. 데이터 흐름 및 상태 전이 (State Transitions)
