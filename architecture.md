@@ -156,3 +156,45 @@ erDiagram
 | **GET** | `/api/jobs/{job_id}` | 작업 진행 상황 상세 폴링 및 결과 조회 | Response: `JobResponse` |
 | **POST** | `/api/jobs/{job_id}/approve` | 다국어 리소스 최종 파일 배포 승인 | Response: `JobResponse` |
 | **DELETE** | `/api/jobs/{job_id}` | 번역 작업 및 연관 번역 이력 삭제 | Response: `{"detail": "Job successfully deleted"}` |
+
+---
+
+## 6. Git 기반 번역 배포 게이트
+
+GitHub Actions에서 사용하는 독립 실행 CLI는 서비스형 Job과 별도로 다음 불변조건을 지킵니다.
+
+```mermaid
+flowchart LR
+    Diff["원본 diff 분석"] --> Scope["added · changed · missing 분류"]
+    Scope --> Context["키 유형 · 주변 문구 · 용어집 결합"]
+    Context --> Translate["선택된 키만 번역"]
+    Translate --> Static["JSON · ICU · 고유명사 · 금지어 검사"]
+    Static --> Review["변경된 모든 키 언어별 QA"]
+    Review -->|"PASSED · critical error 0"| Merge["기존 번역에 안전하게 병합"]
+    Review -->|"FAILED 또는 UNAVAILABLE"| Block["커밋 차단 · QA 보고서 보존"]
+    Merge --> Report["실제 상태와 점수가 담긴 증거 보고서"]
+```
+
+### 변경 범위 계약
+
+- `added`: 기준 원본에는 없고 현재 원본에 추가된 키
+- `changed`: 기준 원본과 현재 원본의 값이 달라진 키
+- `missing`: 현재 원본에는 있으나 대상 언어 파일에 없는 키
+- `preserved`: 위 세 범주에 속하지 않아 기존 번역을 그대로 유지한 키
+- 전체 재번역은 명시적인 `--sync-all`에서만 허용하며 일반 push에서는 사용하지 않습니다.
+- 원본에서 제거된 키는 최종 병합 시 대상 언어에서도 제거해 key parity를 유지합니다.
+
+### 품질 게이트 계약
+
+- 정적 검증은 JSON 구조, 키, ICU 변수, 보존 용어, 필수 번역과 금지 표현을 검사합니다.
+- QA는 첫 N개 샘플이 아니라 이번 실행에서 생성한 모든 키를 작은 batch로 나눠 검사합니다.
+- 의미 정확성, 자연스러움, 용어 정확성, UI 적합성을 각각 5점 척도로 평가합니다.
+- 모든 항목이 4점 이상이고 `critical_errors`가 없어야 통과합니다.
+- QA 응답 누락, 파싱 실패, Gateway 장애는 `UNAVAILABLE`이며 자동 커밋을 허용하지 않습니다.
+- 번역 모델과 검수 모델은 별도 환경변수로 지정하고, 실행 보고서에는 사용 alias와 실제 판정 상태를 남깁니다.
+
+### 재현성 계약
+
+- 소비 저장소는 LingoAgent의 `main`이 아니라 검증된 commit SHA를 checkout합니다.
+- 커밋 메시지는 고정 문구가 아니라 생성된 QA 보고서의 실제 상태와 점수를 사용합니다.
+- QA 보고서는 성공·실패 여부와 관계없이 CI artifact로 보존합니다.
