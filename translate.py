@@ -9,6 +9,7 @@ import logging
 import os
 import re
 import sys
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable
@@ -22,6 +23,10 @@ LEGACY_MODEL = os.environ.get("LLM_MODEL", "auto")
 TRANSLATION_MODEL = os.environ.get("LLM_TRANSLATION_MODEL", LEGACY_MODEL)
 REVIEW_MODEL = os.environ.get("LLM_REVIEW_MODEL", LEGACY_MODEL)
 LLM_TIMEOUT_SECONDS = float(os.environ.get("LLM_TIMEOUT_SECONDS", "240"))
+LLM_MIN_REQUEST_INTERVAL_SECONDS = float(
+    os.environ.get("LLM_MIN_REQUEST_INTERVAL_SECONDS", "0")
+)
+LLM_REQUEST_ATTEMPTS = 4
 MAX_ATTEMPTS = 3
 QA_BATCH_SIZE = 8
 QA_MIN_DIMENSION_SCORE = 4
@@ -40,6 +45,7 @@ _SIMPLE_VAR = re.compile(r"\{([a-zA-Z0-9_]+)\}")
 _ICU_COMPLEX = re.compile(
     r"\{([a-zA-Z0-9_]+)\s*,\s*(plural|select|selectordinal)", re.IGNORECASE
 )
+_last_request_at = 0.0
 
 
 def _extract_vars(text: str) -> set[str]:
@@ -309,6 +315,8 @@ def _language_style(target_lang: str) -> str:
 
 
 def _chat_completion(model: str, messages: list[dict[str, str]], max_tokens: int) -> str:
+    global _last_request_at
+
     if not LLM_GATEWAY_URL:
         raise RuntimeError("LLM_GATEWAY_URL 미설정")
     headers = {"Content-Type": "application/json"}
@@ -323,20 +331,50 @@ def _chat_completion(model: str, messages: list[dict[str, str]], max_tokens: int
         "reasoning_effort": "none",
         "chat_template_kwargs": {"enable_thinking": False},
     }
-    with httpx.Client(timeout=LLM_TIMEOUT_SECONDS) as client:
-        response = client.post(
-            f"{LLM_GATEWAY_URL}/chat/completions", headers=headers, json=payload
-        )
-        response.raise_for_status()
-        raw = response.json()["choices"][0]["message"].get("content")
-        if not raw:
-            raise ValueError("LLM 응답 content가 비어 있습니다")
-        content = raw.strip()
-        if "```" in content:
-            content = content.split("```", 2)[1].strip()
-            if content.startswith("json"):
-                content = content[4:].strip()
-        return content
+    for attempt in range(1, LLM_REQUEST_ATTEMPTS + 1):
+        elapsed = time.monotonic() - _last_request_at
+        remaining = LLM_MIN_REQUEST_INTERVAL_SECONDS - elapsed
+        if _last_request_at and remaining > 0:
+            logger.info("Gateway 요청 간격을 위해 %.1f초 대기", remaining)
+            time.sleep(remaining)
+
+        try:
+            with httpx.Client(timeout=LLM_TIMEOUT_SECONDS) as client:
+                _last_request_at = time.monotonic()
+                response = client.post(
+                    f"{LLM_GATEWAY_URL}/chat/completions", headers=headers, json=payload
+                )
+                response.raise_for_status()
+                raw = response.json()["choices"][0]["message"].get("content")
+                if not raw:
+                    raise ValueError("LLM 응답 content가 비어 있습니다")
+                content = raw.strip()
+                if "```" in content:
+                    content = content.split("```", 2)[1].strip()
+                    if content.startswith("json"):
+                        content = content[4:].strip()
+                return content
+        except httpx.HTTPStatusError as exc:
+            status = exc.response.status_code
+            retryable = status == 429 or 500 <= status < 600
+            if not retryable or attempt == LLM_REQUEST_ATTEMPTS:
+                raise
+            retry_after = exc.response.headers.get("Retry-After")
+            try:
+                delay = float(retry_after) if retry_after else 10 * (2 ** (attempt - 1))
+            except ValueError:
+                delay = 10 * (2 ** (attempt - 1))
+            delay = min(max(delay, 1), 60)
+            logger.warning(
+                "Gateway HTTP %d — %.1f초 후 재시도 (%d/%d)",
+                status,
+                delay,
+                attempt + 1,
+                LLM_REQUEST_ATTEMPTS,
+            )
+            time.sleep(delay)
+
+    raise RuntimeError("LLM 요청 재시도 한도를 초과했습니다")
 
 
 def translate_with_llm(

@@ -192,6 +192,7 @@ flowchart LR
 - 모든 항목이 4점 이상이고 `critical_errors`가 없어야 통과합니다.
 - QA 응답 누락, 파싱 실패, Gateway 장애는 `UNAVAILABLE`이며 자동 커밋을 허용하지 않습니다.
 - 번역 모델과 검수 모델은 별도 환경변수로 지정하고, 실행 보고서에는 사용 alias와 실제 판정 상태를 남깁니다.
+- Gateway의 `429`와 일시적 `5xx`는 `Retry-After` 또는 제한된 지수 backoff로 재시도하고, 낮은 RPM Key는 최소 요청 간격을 설정합니다.
 
 ### 재현성 계약
 

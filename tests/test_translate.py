@@ -2,6 +2,7 @@ import json
 import unittest
 from unittest.mock import patch
 
+import httpx
 import translate
 
 
@@ -158,6 +159,27 @@ class QualityGateTests(unittest.TestCase):
             glossary,
         )
         self.assertTrue(ok, message)
+
+    def test_chat_completion_retries_rate_limit(self):
+        request = httpx.Request("POST", "https://gateway.example/chat/completions")
+        limited = httpx.Response(429, request=request, headers={"Retry-After": "1"})
+        success = httpx.Response(
+            200,
+            request=request,
+            json={"choices": [{"message": {"content": "{\"ok\": true}"}}]},
+        )
+        client = unittest.mock.MagicMock()
+        client.__enter__.return_value = client
+        client.post.side_effect = [limited, success]
+
+        with patch.object(translate, "LLM_GATEWAY_URL", "https://gateway.example"), patch.object(
+            translate.httpx, "Client", return_value=client
+        ), patch.object(translate.time, "sleep") as sleep:
+            content = translate._chat_completion("auto", [], 128)
+
+        self.assertEqual('{"ok": true}', content)
+        self.assertEqual(2, client.post.call_count)
+        sleep.assert_called_once_with(1.0)
 
 
 if __name__ == "__main__":
