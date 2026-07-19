@@ -244,6 +244,9 @@ def validate_glossary(
                 problems.append(f"{_path_label(path)}: 보존 용어 누락 '{token}'")
 
         for entry in glossary.get("entries", []):
+            scoped_keys = entry.get("keys") or []
+            if scoped_keys and _path_label(path) not in scoped_keys:
+                continue
             source_term = entry.get("source", "")
             if not source_term or source_term not in source_value:
                 continue

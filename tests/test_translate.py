@@ -190,6 +190,32 @@ class QualityGateTests(unittest.TestCase):
         )
         self.assertTrue(ok, message)
 
+    def test_glossary_entry_can_be_scoped_to_specific_keys(self):
+        glossary = {
+            "preserve": [],
+            "entries": [
+                {
+                    "source": "요청 경계",
+                    "keys": ["home.demo.title"],
+                    "targets": {"ja-JP": "リクエストの境界"},
+                    "forbidden": {},
+                }
+            ],
+        }
+        ok, message = translate.validate_glossary(
+            {
+                "home.demo.title": "요청 경계 확인",
+                "career.title": "요청 경계 연결",
+            },
+            {
+                "home.demo.title": "リクエストの境界を確認",
+                "career.title": "リクエスト境界との接続",
+            },
+            "ja-JP",
+            glossary,
+        )
+        self.assertTrue(ok, message)
+
     def test_chat_completion_retries_rate_limit(self):
         request = httpx.Request("POST", "https://gateway.example/chat/completions")
         limited = httpx.Response(429, request=request, headers={"Retry-After": "1"})
