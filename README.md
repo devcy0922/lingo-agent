@@ -49,6 +49,7 @@ export LLM_API_KEY="your-api-key"
 export LLM_TRANSLATION_MODEL="auto"
 export LLM_REVIEW_MODEL="auto"
 export LLM_TIMEOUT_SECONDS="240"  # 버퍼링 Gateway의 최대 응답 대기 시간
+export LLM_MIN_REQUEST_INTERVAL_SECONDS="15"  # 낮은 RPM Key 사용 시 요청 간격
 
 # 번역 실행
 python translate.py \
