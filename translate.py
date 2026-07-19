@@ -28,6 +28,7 @@ LLM_MIN_REQUEST_INTERVAL_SECONDS = float(
 )
 LLM_REQUEST_ATTEMPTS = 4
 REVIEW_SCHEMA_ATTEMPTS = 2
+TRANSLATION_STRUCTURE_ATTEMPTS = 2
 MAX_ATTEMPTS = 3
 QA_BATCH_SIZE = 8
 QA_MIN_HARD_DIMENSION_SCORE = 4
@@ -141,6 +142,35 @@ def _nested_from_leaves(values: dict[PathKey, str]) -> JsonObject:
             cursor = cursor.setdefault(segment, {})
         cursor[path[-1]] = value
     return output
+
+
+def _normalize_translation_shape(
+    content: str, expected_paths: set[PathKey]
+) -> tuple[str, bool]:
+    """선택 경로와 정확히 일치하는 점 표기 평면 키를 중첩 구조로 복원합니다."""
+    try:
+        parsed = json.loads(content)
+    except json.JSONDecodeError:
+        return content, False
+    if not isinstance(parsed, dict):
+        return content, False
+
+    current_paths = set(_leaf_map(parsed))
+    if current_paths == expected_paths:
+        return content, False
+
+    flattened: dict[PathKey, str] = {}
+    for key, value in parsed.items():
+        if not isinstance(key, str) or not isinstance(value, str):
+            return content, False
+        path = tuple(key.split("."))
+        if path in flattened:
+            return content, False
+        flattened[path] = value
+    if set(flattened) != expected_paths:
+        return content, False
+    normalized = _nested_from_leaves(flattened)
+    return json.dumps(normalized, ensure_ascii=False), True
 
 
 @dataclass
@@ -701,27 +731,50 @@ def run_pipeline(
         source_subset = _build_subset(source, pending_paths)
         source_subset_content = json.dumps(source_subset, ensure_ascii=False)
         context = build_context(source, pending_paths)
-        translated_content, is_fallback = translate_with_llm(
-            source_subset_content,
-            target_lang,
-            feedback,
-            context=context,
-            glossary=glossary,
-        )
+        translation_feedback = list(feedback)
+        translated_content = ""
+        is_fallback = False
+        lint_ok = False
+        lint_message = "번역 응답을 받지 못했습니다"
+        for structure_attempt in range(1, TRANSLATION_STRUCTURE_ATTEMPTS + 1):
+            translated_content, is_fallback = translate_with_llm(
+                source_subset_content,
+                target_lang,
+                translation_feedback,
+                context=context,
+                glossary=glossary,
+            )
+            if is_fallback:
+                break
+            translated_content, normalized = _normalize_translation_shape(
+                translated_content, pending_paths
+            )
+            if normalized:
+                result.audit_trail.append(
+                    f"Attempt {attempt} / Structure {structure_attempt}: "
+                    "점 표기 평면 키를 중첩 JSON으로 복원"
+                )
+            lint_ok, lint_message = lint_translation(
+                source_subset_content, translated_content
+            )
+            result.audit_trail.append(
+                f"Attempt {attempt} / Structure {structure_attempt} / Lint: "
+                f"{'PASSED' if lint_ok else 'FAILED'} — {lint_message}"
+            )
+            if lint_ok:
+                break
+            translation_feedback.append(
+                f"JSON structure error: {lint_message}. Use the exact nested SOURCE "
+                "structure; never return dotted flattened keys."
+            )
+
         result.is_fallback = is_fallback
         if is_fallback:
             result.audit_trail.append("번역 LLM 장애 — 커밋 차단")
             break
-
-        lint_ok, lint_message = lint_translation(
-            source_subset_content, translated_content
-        )
         result.lint_passed = lint_ok
-        result.audit_trail.append(
-            f"Attempt {attempt} / Lint: {'PASSED' if lint_ok else 'FAILED'} — {lint_message}"
-        )
         if not lint_ok:
-            feedback.append(lint_message)
+            feedback = translation_feedback
             continue
 
         translated = json.loads(translated_content)

@@ -168,7 +168,10 @@ flowchart LR
     Diff["원본 diff 분석"] --> Scope["added · changed · missing 분류"]
     Scope --> Context["키 유형 · 주변 문구 · 용어집 결합"]
     Context --> Translate["선택된 키만 번역"]
-    Translate --> Static["JSON · ICU · 고유명사 · 금지어 검사"]
+    Translate --> Normalize["점 표기 평면 키를 원본 JSON 구조로 정규화"]
+    Normalize --> Static["JSON · ICU · 고유명사 · 금지어 검사"]
+    Static -->|"구조 오류"| Repair["동일 QA 회차에서 구조 피드백 재생성"]
+    Repair --> Normalize
     Static --> Review["변경된 모든 키 언어별 QA"]
     Review -->|"PASSED · critical error 0"| Merge["기존 번역에 안전하게 병합"]
     Review -->|"일부 키 FAILED"| Retry["실패한 키만 피드백 기반 재번역"]
@@ -189,6 +192,8 @@ flowchart LR
 ### 품질 게이트 계약
 
 - 정적 검증은 JSON 구조, 키, ICU 변수, 보존 용어, 필수 번역과 금지 표현을 검사합니다.
+- 모델이 `career.link`처럼 점 표기 평면 키를 반환하면 선택 범위와 정확히 일치하는 경우에만 원본 중첩 구조로 결정적으로 복원합니다.
+- 키 누락·추가 등 복원할 수 없는 구조 오류는 품질 재시도 횟수를 소모하지 않고 같은 QA 회차 안에서 한 번 재생성합니다.
 - QA는 첫 N개 샘플이 아니라 이번 실행에서 생성한 모든 키를 작은 batch로 나눠 검사합니다.
 - 의미 정확성, 자연스러움, 용어 정확성, UI 적합성을 각각 5점 척도로 평가합니다.
 - 의미 정확성과 용어 정확성은 항목별 4점 이상을 강제하고, 자연스러움과 UI 적합성은 3점 이상이면서 항목 평균이 4점 이상이어야 통과합니다.

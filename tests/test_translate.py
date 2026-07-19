@@ -67,6 +67,26 @@ class TranslationScopeTests(unittest.TestCase):
             {("a",)}, translate.plan_translation(source, existing, sync_all=True).selected
         )
 
+    def test_dotted_flat_keys_are_normalized_to_nested_json(self):
+        content, normalized = translate._normalize_translation_shape(
+            json.dumps(
+                {
+                    "career.link": "View experience",
+                    "home.demo.label": "Runnable proof",
+                }
+            ),
+            {("career", "link"), ("home", "demo", "label")},
+        )
+
+        self.assertTrue(normalized)
+        self.assertEqual(
+            {
+                "career": {"link": "View experience"},
+                "home": {"demo": {"label": "Runnable proof"}},
+            },
+            json.loads(content),
+        )
+
 
 class QualityGateTests(unittest.TestCase):
     def test_qa_unavailable_never_succeeds(self):
@@ -267,6 +287,45 @@ class QualityGateTests(unittest.TestCase):
             "previous=\"Representative Case Demo\"",
             translator.call_args_list[1].args[2][0],
         )
+
+    def test_pipeline_repairs_structure_before_quality_review(self):
+        review = translate.QualityReview(
+            "PASSED",
+            100,
+            "통과",
+            [
+                {
+                    "key": "career.link",
+                    "semantic_accuracy": 5,
+                    "naturalness": 5,
+                    "terminology": 5,
+                    "ui_fit": 5,
+                    "critical_errors": [],
+                    "critique": "",
+                }
+            ],
+        )
+        with patch.object(
+            translate,
+            "translate_with_llm",
+            side_effect=[("{}", False), (json.dumps({"career": {"link": "Details"}}), False)],
+        ) as translator, patch.object(
+            translate,
+            "evaluate_quality",
+            return_value=review,
+        ) as reviewer:
+            result = translate.run_pipeline(
+                json.dumps({"career": {"link": "자세히 보기"}}),
+                "en-US",
+                existing_content="{}",
+                sync_all=True,
+            )
+
+        self.assertTrue(result.success)
+        self.assertEqual(1, result.attempts)
+        self.assertEqual(2, translator.call_count)
+        reviewer.assert_called_once()
+        self.assertIn("JSON structure error", translator.call_args_list[1].args[2][-1])
 
     def test_glossary_rejects_known_bad_translations(self):
         glossary = {
