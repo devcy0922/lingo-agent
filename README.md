@@ -44,6 +44,7 @@ pip install -r requirements-translate.txt
 export LLM_GATEWAY_URL="https://your-gateway.example.com/v1"
 export LLM_API_KEY="your-api-key"
 export LLM_MODEL="auto"
+export LLM_TIMEOUT_SECONDS="240"  # 버퍼링 Gateway의 최대 응답 대기 시간
 
 # 번역 실행
 python translate.py \
