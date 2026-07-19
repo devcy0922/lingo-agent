@@ -1,29 +1,7 @@
 #!/usr/bin/env python3
-"""
-LingoAgent 독립 실행 번역 CLI
-=================================
-FastAPI / SQLAlchemy 없이 단독으로 실행 가능한 번역 파이프라인입니다.
-GitHub Action 또는 로컬 스크립트로 직접 호출합니다.
+"""LingoAgent 독립 실행 i18n 번역 배포 게이트."""
 
-사용법:
-    python translate.py \
-        --source docs/public/locales/ko.json \
-        --langs en-US ja-JP \
-        --output docs/public/locales/ \
-        [--dry-run]
-
-환경변수:
-    LLM_GATEWAY_URL   — LLM 게이트웨이 주소 (필수)
-    LLM_API_KEY       — API 키 (Optional, 게이트웨이가 요구하는 경우)
-    LLM_MODEL         — 모델명 (기본값: auto)
-    LLM_TIMEOUT_SECONDS — Gateway Read Timeout 초 (기본값: 240)
-
-종료 코드:
-    0  — 모든 번역 완료 (lint + QA 통과)
-    1  — LLM 장애로 Fallback 번역 발생 → 커밋 차단
-    2  — 린트 또는 QA 검증 3회 모두 실패
-    3  — 입력/출력 파일 I/O 오류
-"""
+from __future__ import annotations
 
 import argparse
 import json
@@ -31,483 +9,691 @@ import logging
 import os
 import re
 import sys
+from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any, Iterable
 
 import httpx
 
-# ──────────────────────────────────────────
-# 설정
-# ──────────────────────────────────────────
+
 LLM_GATEWAY_URL = os.environ.get("LLM_GATEWAY_URL", "").rstrip("/")
-LLM_API_KEY     = os.environ.get("LLM_API_KEY", "")
-LLM_MODEL       = os.environ.get("LLM_MODEL", "auto")
+LLM_API_KEY = os.environ.get("LLM_API_KEY", "")
+LEGACY_MODEL = os.environ.get("LLM_MODEL", "auto")
+TRANSLATION_MODEL = os.environ.get("LLM_TRANSLATION_MODEL", LEGACY_MODEL)
+REVIEW_MODEL = os.environ.get("LLM_REVIEW_MODEL", LEGACY_MODEL)
 LLM_TIMEOUT_SECONDS = float(os.environ.get("LLM_TIMEOUT_SECONDS", "240"))
-QA_PASS_SCORE   = 85   # QA 합격 점수 컷오프
-MAX_ATTEMPTS    = 3    # 최대 재시도 횟수
+MAX_ATTEMPTS = 3
+QA_BATCH_SIZE = 8
+QA_MIN_DIMENSION_SCORE = 4
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
-    datefmt="%H:%M:%S"
+    datefmt="%H:%M:%S",
 )
 logger = logging.getLogger("LingoAgent")
 
+PathKey = tuple[str, ...]
+JsonObject = dict[str, Any]
 
-# ──────────────────────────────────────────
-# ICU 변수 추출 (중첩 JSON + plural/select 포함)
-# ──────────────────────────────────────────
-# 단순 변수: {count}, {username}
 _SIMPLE_VAR = re.compile(r"\{([a-zA-Z0-9_]+)\}")
-# ICU plural/select 패턴 (첫 식별자만 캡처): {count, plural, ...}
-_ICU_COMPLEX = re.compile(r"\{([a-zA-Z0-9_]+)\s*,\s*(plural|select|selectordinal)", re.IGNORECASE)
+_ICU_COMPLEX = re.compile(
+    r"\{([a-zA-Z0-9_]+)\s*,\s*(plural|select|selectordinal)", re.IGNORECASE
+)
 
 
 def _extract_vars(text: str) -> set[str]:
-    """텍스트에서 ICU 변수 식별자를 추출합니다 (simple + plural/select 포함)."""
-    simple = set(_SIMPLE_VAR.findall(text))
-    # plural/select의 중간 키워드(plural, select)는 제거하고 식별자만 유지
-    complex_ids = {m.group(1) for m in _ICU_COMPLEX.finditer(text)}
-    return simple | complex_ids
+    """문자열에서 단순 변수와 ICU 복합 변수 식별자를 추출합니다."""
+    return set(_SIMPLE_VAR.findall(text)) | {
+        match.group(1) for match in _ICU_COMPLEX.finditer(text)
+    }
 
 
-def _flatten_values(obj, prefix="") -> dict[str, str]:
-    """중첩 JSON의 모든 문자열 값을 평탄화합니다."""
-    result = {}
+def _leaf_map(obj: Any, path: PathKey = ()) -> dict[PathKey, str]:
+    """JSON 문자열 leaf를 구조를 잃지 않는 tuple 경로로 평탄화합니다."""
+    result: dict[PathKey, str] = {}
     if isinstance(obj, dict):
-        for k, v in obj.items():
-            full_key = f"{prefix}.{k}" if prefix else k
-            result.update(_flatten_values(v, full_key))
+        for key, value in obj.items():
+            result.update(_leaf_map(value, path + (key,)))
+    elif isinstance(obj, str):
+        result[path] = obj
+    return result
+
+
+def _flatten_values(obj: Any, prefix: str = "") -> dict[str, str]:
+    """기존 호출부 호환용 문자열 경로 평탄화 함수입니다."""
+    result: dict[str, str] = {}
+    if isinstance(obj, dict):
+        for key, value in obj.items():
+            full_key = f"{prefix}.{key}" if prefix else key
+            result.update(_flatten_values(value, full_key))
     elif isinstance(obj, str):
         result[prefix] = obj
     return result
 
 
-# ──────────────────────────────────────────
-# 정적 린터 (ICU 변수 무결성 검사)
-# ──────────────────────────────────────────
+def _path_label(path: PathKey) -> str:
+    return ".".join(path)
+
+
+def _build_subset(obj: JsonObject, selected: set[PathKey]) -> JsonObject:
+    """선택된 leaf만 원본과 같은 JSON 구조로 복원합니다."""
+
+    def visit(value: Any, path: PathKey) -> Any:
+        if isinstance(value, dict):
+            output: JsonObject = {}
+            for key, child in value.items():
+                built = visit(child, path + (key,))
+                if built is not None:
+                    output[key] = built
+            return output or None
+        if isinstance(value, str) and path in selected:
+            return value
+        return None
+
+    return visit(obj, ()) or {}
+
+
+def _merge_from_source(
+    source: JsonObject, existing: JsonObject, translated: JsonObject
+) -> JsonObject:
+    """원본 구조를 기준으로 신규 번역과 기존 번역을 병합합니다."""
+    existing_leaves = _leaf_map(existing)
+    translated_leaves = _leaf_map(translated)
+
+    def visit(value: Any, path: PathKey) -> Any:
+        if isinstance(value, dict):
+            return {key: visit(child, path + (key,)) for key, child in value.items()}
+        if isinstance(value, str):
+            if path in translated_leaves:
+                return translated_leaves[path]
+            if path in existing_leaves:
+                return existing_leaves[path]
+            raise ValueError(f"번역 값이 없는 키: {_path_label(path)}")
+        return value
+
+    return visit(source, ())
+
+
+@dataclass
+class TranslationScope:
+    added: set[PathKey] = field(default_factory=set)
+    changed: set[PathKey] = field(default_factory=set)
+    missing: set[PathKey] = field(default_factory=set)
+    selected: set[PathKey] = field(default_factory=set)
+    removed: set[PathKey] = field(default_factory=set)
+    preserved: set[PathKey] = field(default_factory=set)
+
+    def as_dict(self) -> dict[str, Any]:
+        def labels(paths: set[PathKey]) -> list[str]:
+            return sorted(_path_label(path) for path in paths)
+
+        return {
+            "added": labels(self.added),
+            "changed": labels(self.changed),
+            "missing": labels(self.missing),
+            "selected": labels(self.selected),
+            "removed": labels(self.removed),
+            "preserved_count": len(self.preserved),
+        }
+
+
+def plan_translation(
+    source: JsonObject,
+    existing: JsonObject,
+    base_source: JsonObject | None = None,
+    sync_all: bool = False,
+) -> TranslationScope:
+    """원본 이력과 대상 파일을 비교해 번역 범위를 결정합니다."""
+    current = _leaf_map(source)
+    target = _leaf_map(existing)
+    previous = _leaf_map(base_source) if base_source is not None else None
+
+    added = set(current) - set(previous or {}) if previous is not None else set()
+    changed = (
+        {
+            path
+            for path in set(current) & set(previous or {})
+            if current[path] != (previous or {})[path]
+        }
+        if previous is not None
+        else set()
+    )
+    missing = set(current) - set(target)
+    selected = set(current) if sync_all else added | changed | missing
+    return TranslationScope(
+        added=added,
+        changed=changed,
+        missing=missing,
+        selected=selected,
+        removed=set(target) - set(current),
+        preserved=set(current) - selected,
+    )
+
 
 def lint_translation(source_content: str, target_content: str) -> tuple[bool, str]:
-    """
-    번역 결과 JSON의 무결성을 검사합니다.
-
-    검사 항목:
-    1. JSON 파싱 가능 여부
-    2. 키 목록 일치 여부 (누락 / 추가 키 감지)
-    3. ICU 변수 집합 보존 여부 (simple + plural/select)
-    """
+    """JSON 구조, 키 집합과 ICU 변수 무결성을 검사합니다."""
     try:
-        src = json.loads(source_content)
-        tgt = json.loads(target_content)
-    except json.JSONDecodeError as e:
-        return False, f"JSON 파싱 에러: {e}"
+        source = json.loads(source_content)
+        target = json.loads(target_content)
+    except json.JSONDecodeError as exc:
+        return False, f"JSON 파싱 에러: {exc}"
 
-    src_flat = _flatten_values(src)
-    tgt_flat = _flatten_values(tgt)
-
-    missing_keys = set(src_flat.keys()) - set(tgt_flat.keys())
-    extra_keys   = set(tgt_flat.keys()) - set(src_flat.keys())
-
+    source_flat = _leaf_map(source)
+    target_flat = _leaf_map(target)
+    missing_keys = set(source_flat) - set(target_flat)
+    extra_keys = set(target_flat) - set(source_flat)
     if missing_keys:
-        return False, f"번역본에 누락된 키: {sorted(missing_keys)}"
+        return False, f"번역본에 누락된 키: {sorted(map(_path_label, missing_keys))}"
     if extra_keys:
-        return False, f"소스에 없는 추가 키: {sorted(extra_keys)}"
+        return False, f"소스에 없는 추가 키: {sorted(map(_path_label, extra_keys))}"
 
-    for key, src_val in src_flat.items():
-        tgt_val = tgt_flat.get(key, "")
-        src_vars = _extract_vars(src_val)
-        tgt_vars = _extract_vars(tgt_val)
-
-        missing_vars = src_vars - tgt_vars
-        extra_vars   = tgt_vars - src_vars
-
+    for path, source_value in source_flat.items():
+        target_value = target_flat[path]
+        missing_vars = _extract_vars(source_value) - _extract_vars(target_value)
+        extra_vars = _extract_vars(target_value) - _extract_vars(source_value)
         if missing_vars:
-            return False, f"키 '{key}': 변수 유실 → {missing_vars}"
+            return False, f"키 '{_path_label(path)}': 변수 유실 → {missing_vars}"
         if extra_vars:
-            return False, f"키 '{key}': 임의 변수 삽입 → {extra_vars}"
-
+            return False, f"키 '{_path_label(path)}': 임의 변수 삽입 → {extra_vars}"
     return True, "Lint PASSED"
 
 
-# ──────────────────────────────────────────
-# LLM 호출: 번역
-# ──────────────────────────────────────────
+def _load_json(path: Path | None, *, required: bool = False) -> JsonObject:
+    if path is None:
+        return {}
+    if not path.exists():
+        if required:
+            raise FileNotFoundError(path)
+        return {}
+    parsed = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(parsed, dict):
+        raise ValueError(f"JSON 최상위 값은 object여야 합니다: {path}")
+    return parsed
+
+
+def load_glossary(path: Path | None) -> JsonObject:
+    glossary = _load_json(path)
+    glossary.setdefault("preserve", [])
+    glossary.setdefault("entries", [])
+    return glossary
+
+
+def validate_glossary(
+    source: JsonObject,
+    target: JsonObject,
+    target_lang: str,
+    glossary: JsonObject,
+) -> tuple[bool, str]:
+    """보존 용어, 필수 번역과 금지 표현을 결정적으로 검사합니다."""
+    source_flat = _leaf_map(source)
+    target_flat = _leaf_map(target)
+    problems: list[str] = []
+
+    for path, source_value in source_flat.items():
+        target_value = target_flat.get(path, "")
+        for token in glossary.get("preserve", []):
+            if token in source_value and token not in target_value:
+                problems.append(f"{_path_label(path)}: 보존 용어 누락 '{token}'")
+
+        for entry in glossary.get("entries", []):
+            source_term = entry.get("source", "")
+            if not source_term or source_term not in source_value:
+                continue
+            required_term = entry.get("targets", {}).get(target_lang)
+            if required_term and required_term not in target_value:
+                problems.append(
+                    f"{_path_label(path)}: 필수 용어 '{required_term}' 누락"
+                )
+            for forbidden in entry.get("forbidden", {}).get(target_lang, []):
+                if forbidden.casefold() in target_value.casefold():
+                    problems.append(
+                        f"{_path_label(path)}: 금지 표현 '{forbidden}' 사용"
+                    )
+
+    if problems:
+        return False, "; ".join(problems)
+    return True, "Glossary PASSED"
+
+
+def infer_ui_type(key: str) -> str:
+    suffix = key.rsplit(".", 1)[-1].lower()
+    return {
+        "title": "heading",
+        "headline": "heading",
+        "cta": "button",
+        "link": "link",
+        "desc": "body",
+        "context": "body",
+        "tagline": "tagline",
+        "label": "short_label",
+        "eyebrow": "short_label",
+        "value": "metric",
+    }.get(suffix, "ui_text")
+
+
+def build_context(source: JsonObject, selected: set[PathKey]) -> JsonObject:
+    source_flat = _leaf_map(source)
+    context: JsonObject = {}
+    for path in sorted(selected):
+        label = _path_label(path)
+        namespace = label.rsplit(".", 1)[0] if "." in label else label
+        neighbors = [
+            {"key": _path_label(other), "source": value}
+            for other, value in source_flat.items()
+            if other != path and _path_label(other).startswith(namespace + ".")
+        ][:3]
+        context[label] = {"type": infer_ui_type(label), "neighbors": neighbors}
+    return context
+
+
+def _language_style(target_lang: str) -> str:
+    if target_lang.startswith("en"):
+        return (
+            "Use idiomatic professional portfolio English. Avoid literal Korean syntax, "
+            "unnecessary Title Case, awkward noun chains, and marketing filler."
+        )
+    if target_lang.startswith("ja"):
+        return (
+            "Use natural Japanese for a technical portfolio. Avoid Korean-style noun chains, "
+            "unnecessary keigo, ambiguous フロントエンド wording, and inconsistent punctuation."
+        )
+    return "Use concise, idiomatic UI language for the target locale."
+
+
+def _chat_completion(model: str, messages: list[dict[str, str]], max_tokens: int) -> str:
+    if not LLM_GATEWAY_URL:
+        raise RuntimeError("LLM_GATEWAY_URL 미설정")
+    headers = {"Content-Type": "application/json"}
+    if LLM_API_KEY:
+        headers["Authorization"] = f"Bearer {LLM_API_KEY}"
+    payload: JsonObject = {
+        "model": model,
+        "messages": messages,
+        "temperature": 0.1,
+        "max_tokens": max_tokens,
+        "tool_choice": "none",
+        "reasoning_effort": "none",
+        "chat_template_kwargs": {"enable_thinking": False},
+    }
+    with httpx.Client(timeout=LLM_TIMEOUT_SECONDS) as client:
+        response = client.post(
+            f"{LLM_GATEWAY_URL}/chat/completions", headers=headers, json=payload
+        )
+        response.raise_for_status()
+        raw = response.json()["choices"][0]["message"].get("content")
+        if not raw:
+            raise ValueError("LLM 응답 content가 비어 있습니다")
+        content = raw.strip()
+        if "```" in content:
+            content = content.split("```", 2)[1].strip()
+            if content.startswith("json"):
+                content = content[4:].strip()
+        return content
+
 
 def translate_with_llm(
     source_content: str,
     target_lang: str,
-    feedback_history: list[str] | None = None
+    feedback_history: list[str] | None = None,
+    *,
+    context: JsonObject | None = None,
+    glossary: JsonObject | None = None,
 ) -> tuple[str, bool]:
-    """
-    LLM 게이트웨이에 번역을 요청합니다.
-
-    반환값:
-        (translated_content, is_fallback)
-        is_fallback=True 이면 LLM 장애로 로컬 규칙 번역 사용됨 → 커밋 불가
-    """
-    if not LLM_GATEWAY_URL:
-        logger.warning("LLM_GATEWAY_URL 미설정 — Fallback 번역으로 전환")
-        return _fallback_translation(source_content, target_lang), True
-
+    """선택된 키를 번역하며 LLM 장애는 커밋 불가 상태로 반환합니다."""
     prompt = (
-        f"You are an expert i18n translation system. "
-        f"Translate the following Korean UI locale JSON into '{target_lang}'.\n\n"
-        f"CRITICAL REQUIREMENTS:\n"
-        f"1. Keep the exact same JSON keys. Do NOT translate keys.\n"
-        f"2. Maintain ICU Message variables (e.g. {{count}}, {{username}}) exactly as-is.\n"
-        f"3. For ICU plural/select patterns, preserve the full pattern structure.\n"
-        f"4. Return ONLY a valid JSON object. No markdown, no explanation.\n\n"
-        f"Korean JSON:\n{source_content}\n"
+        f"Translate this Korean UI locale subset into {target_lang}.\n"
+        f"STYLE: {_language_style(target_lang)}\n"
+        "Keep the exact JSON structure and keys. Preserve ICU variables exactly. "
+        "Return only valid JSON.\n"
+        f"CONTEXT: {json.dumps(context or {}, ensure_ascii=False)}\n"
+        f"GLOSSARY: {json.dumps(glossary or {}, ensure_ascii=False)}\n"
+        f"SOURCE: {source_content}"
     )
-
     if feedback_history:
-        prompt += "\nFix these errors from previous attempt:\n"
-        for fb in feedback_history:
-            prompt += f"- {fb}\n"
-
-    headers = {"Content-Type": "application/json"}
-    if LLM_API_KEY:
-        headers["Authorization"] = f"Bearer {LLM_API_KEY}"
-
+        prompt += "\nFIX THESE REVIEW ISSUES:\n" + "\n".join(feedback_history)
     try:
-        # GCP API Gateway 버퍼링 시간을 실행 환경에 맞게 조정할 수 있도록 설정
-        with httpx.Client(timeout=LLM_TIMEOUT_SECONDS) as client:
-            resp = client.post(
-                f"{LLM_GATEWAY_URL}/chat/completions",
-                headers=headers,
-                json={
-                    "model": LLM_MODEL,
-                    "messages": [
-                        {"role": "system", "content": "You are a professional software localization system. Return only valid JSON."},
-                        {"role": "user",   "content": prompt},
-                    ],
-                    "temperature": 0.2,
-                    # ko.json 56개 키 × 평균 30토큰 ≈ 1700토큰 출력 예상,
-                    # 일본어/중국어는 더 길어질 수 있으므로 충분히 설정
-                    "max_tokens": 8192,
-                }
-            )
-            resp.raise_for_status()
-            raw = resp.json()["choices"][0]["message"].get("content")
-            if raw is None:
-                # tool_calls 등으로 content가 null인 경우 → Fallback 처리
-                raise ValueError("LLM 응답 content가 null입니다 (tool_call 응답이거나 모델 오류)")
-            content = raw.strip()
-
-            # Markdown 코드 블록 제거
-            if "```json" in content:
-                content = content.split("```json")[1].split("```")[0].strip()
-            elif "```" in content:
-                content = content.split("```")[1].split("```")[0].strip()
-
-            return content, False
-
-    except Exception as e:
-        logger.error(f"LLM 호출 실패: {e} — Fallback 번역 사용")
-        return _fallback_translation(source_content, target_lang), True
+        content = _chat_completion(
+            TRANSLATION_MODEL,
+            [
+                {
+                    "role": "system",
+                    "content": "You are a professional software localization translator.",
+                },
+                {"role": "user", "content": prompt},
+            ],
+            8192,
+        )
+        return content, False
+    except Exception as exc:
+        logger.error("번역 LLM 호출 실패: %s", exc)
+        return source_content, True
 
 
-def _fallback_translation(source_content: str, target_lang: str) -> str:
-    """
-    LLM 불가 시 사용하는 로컬 규칙 번역 (표시용만 — 커밋 금지).
-    is_fallback=True 로 표시되어 GitHub Action을 실패시킵니다.
-    """
-    try:
-        data = json.loads(source_content)
-        flat = _flatten_values(data)
-        mock = {}
-        for k, v in flat.items():
-            if target_lang.startswith("en"):
-                mock[k] = f"[FALLBACK-EN] {v}"
-            elif target_lang.startswith("ja"):
-                mock[k] = f"[FALLBACK-JA] {v}"
-            else:
-                mock[k] = f"[FALLBACK-{target_lang}] {v}"
-        return json.dumps(mock, ensure_ascii=False, indent=2)
-    except Exception:
-        return source_content
+@dataclass
+class QualityReview:
+    status: str
+    score: int
+    critique: str
+    results: list[JsonObject] = field(default_factory=list)
 
 
-# ──────────────────────────────────────────
-# LLM 호출: 품질 평가 (QA Judge)
-# ──────────────────────────────────────────
+def _chunks(items: list[PathKey], size: int) -> Iterable[list[PathKey]]:
+    for index in range(0, len(items), size):
+        yield items[index : index + size]
+
 
 def evaluate_quality(
     source_content: str,
     translated_content: str,
-    target_lang: str
-) -> tuple[int, str]:
-    """
-    LLM-as-a-Judge로 번역 품질을 평가합니다.
-
-    반환값:
-        (score, critique) — score=-1이면 QA API 불가
-    """
-    if not LLM_GATEWAY_URL:
-        return -1, "QA_UNAVAILABLE: LLM_GATEWAY_URL 미설정"
-
-    # QA 프롬프트를 짧게 유지하기 위해 샘플 5개만 사용
-    # (전체 JSON을 넣으면 프롬프트가 너무 길어 모델이 content=null로 응답)
+    target_lang: str,
+    *,
+    context: JsonObject | None = None,
+    glossary: JsonObject | None = None,
+) -> QualityReview:
+    """이번 실행에서 생성한 모든 키를 batch로 나눠 검수합니다."""
     try:
-        src_sample = json.loads(source_content)
-        tgt_sample = json.loads(translated_content)
-        sample_keys = list(src_sample.keys())[:5]
-        src_snippet = json.dumps({k: src_sample[k] for k in sample_keys}, ensure_ascii=False)
-        tgt_snippet = json.dumps({k: tgt_sample[k] for k in sample_keys if k in tgt_sample}, ensure_ascii=False)
-    except Exception:
-        src_snippet = source_content[:500]
-        tgt_snippet = translated_content[:500]
+        source = json.loads(source_content)
+        translated = json.loads(translated_content)
+        source_paths = sorted(_leaf_map(source))
+        all_results: list[JsonObject] = []
 
-    prompt = (
-        f"Rate this Korean→{target_lang} UI translation quality (sample of 5 keys).\n"
-        f"Source: {src_snippet}\n"
-        f"Translation: {tgt_snippet}\n"
-        f"Reply with JSON only: {{\"score\": 0-100, \"critique\": \"one sentence\"}}"
-    )
-
-    headers = {"Content-Type": "application/json"}
-    if LLM_API_KEY:
-        headers["Authorization"] = f"Bearer {LLM_API_KEY}"
-
-    try:
-        with httpx.Client(timeout=LLM_TIMEOUT_SECONDS) as client:
-            resp = client.post(
-                f"{LLM_GATEWAY_URL}/chat/completions",
-                headers=headers,
-                json={
-                    "model": LLM_MODEL,
-                    "messages": [
-                        {"role": "system", "content": "You are a localization QA judge. Respond with JSON: {\"score\": 0-100, \"critique\": \"one sentence\"}"},
-                        {"role": "user",   "content": prompt},
-                    ],
-                    # response_format 미사용: GCP LiteLLM 프록시 호환성 문제
-                    "temperature": 0.1,
-                    "max_tokens": 256,
-                }
+        for batch_paths in _chunks(source_paths, QA_BATCH_SIZE):
+            source_batch = _build_subset(source, set(batch_paths))
+            target_batch = _build_subset(translated, set(batch_paths))
+            expected_keys = [_path_label(path) for path in batch_paths]
+            prompt = (
+                f"Review every key in this Korean→{target_lang} UI translation batch.\n"
+                f"STYLE: {_language_style(target_lang)}\n"
+                f"EXPECTED_KEYS: {json.dumps(expected_keys, ensure_ascii=False)}\n"
+                f"CONTEXT: {json.dumps(context or {}, ensure_ascii=False)}\n"
+                f"GLOSSARY: {json.dumps(glossary or {}, ensure_ascii=False)}\n"
+                f"SOURCE: {json.dumps(source_batch, ensure_ascii=False)}\n"
+                f"TRANSLATION: {json.dumps(target_batch, ensure_ascii=False)}\n"
+                "Return JSON only with results. Each result must contain key, "
+                "semantic_accuracy, naturalness, terminology, ui_fit (integers 1-5), "
+                "critical_errors (array), and critique."
             )
-            resp.raise_for_status()
-            raw = resp.json()["choices"][0]["message"].get("content")
-            if raw is None:
-                raise ValueError("QA 응답 content가 null입니다")
-            content = raw.strip()
-            # Markdown 블록 제거 후 JSON 파싱
-            if "```" in content:
-                content = content.split("```")[1].split("```")[0].strip()
-                if content.startswith("json"):
-                    content = content[4:].strip()
-            qa_data = json.loads(content)
-            return int(qa_data.get("score", 0)), qa_data.get("critique", "")
+            content = _chat_completion(
+                REVIEW_MODEL,
+                [
+                    {
+                        "role": "system",
+                        "content": (
+                            "You are a strict native localization reviewer. "
+                            "Do not omit keys and do not inflate scores."
+                        ),
+                    },
+                    {"role": "user", "content": prompt},
+                ],
+                2048,
+            )
+            payload = json.loads(content)
+            results = payload.get("results")
+            if not isinstance(results, list):
+                raise ValueError("QA results 배열이 없습니다")
+            indexed = {item.get("key"): item for item in results if isinstance(item, dict)}
+            missing = set(expected_keys) - set(indexed)
+            if missing:
+                raise ValueError(f"QA가 키를 누락했습니다: {sorted(missing)}")
+            all_results.extend(indexed[key] for key in expected_keys)
 
-    except Exception as e:
-        logger.error(f"QA 평가 실패: {e}")
-        return -1, f"QA_UNAVAILABLE: {e}"
+        scores: list[int] = []
+        failed: list[str] = []
+        for item in all_results:
+            dimensions = [
+                int(item.get(name, 0))
+                for name in (
+                    "semantic_accuracy",
+                    "naturalness",
+                    "terminology",
+                    "ui_fit",
+                )
+            ]
+            scores.extend(dimensions)
+            critical = item.get("critical_errors") or []
+            if min(dimensions) < QA_MIN_DIMENSION_SCORE or critical:
+                failed.append(
+                    f"{item.get('key')}: {item.get('critique', '')}; critical={critical}"
+                )
 
+        score = round(sum(scores) / len(scores) * 20) if scores else 0
+        if failed:
+            return QualityReview("FAILED", score, " | ".join(failed), all_results)
+        return QualityReview("PASSED", score, "모든 변경 키가 품질 기준을 통과했습니다.", all_results)
+    except Exception as exc:
+        logger.error("QA 평가 실패: %s", exc)
+        return QualityReview("UNAVAILABLE", -1, f"QA_UNAVAILABLE: {exc}")
 
-# ──────────────────────────────────────────
-# 단일 언어 번역 파이프라인
-# ──────────────────────────────────────────
 
 class TranslationResult:
-    def __init__(self, lang: str):
-        self.lang         = lang
-        self.content      = ""
-        self.is_fallback  = False
-        self.lint_passed  = False
-        self.qa_score     = -1
-        self.qa_status    = "PENDING"   # PASSED / FAILED / UNAVAILABLE
-        self.attempts     = 0
-        self.audit_trail  = []          # 검증 과정 기록
+    def __init__(self, lang: str, scope: TranslationScope):
+        self.lang = lang
+        self.scope = scope
+        self.content = ""
+        self.is_fallback = False
+        self.lint_passed = False
+        self.glossary_passed = False
+        self.qa_score = -1
+        self.qa_status = "PENDING"
+        self.qa_results: list[JsonObject] = []
+        self.attempts = 0
+        self.audit_trail: list[str] = []
 
     @property
     def success(self) -> bool:
-        # QA가 UNAVAILABLE이어도 Lint를 통과했다면 콄밋 허용
-        # (번역 자체는 LLM이 성공적으로 수행하였으며 ICU 무결성도 확인됨)
+        qa_ok = self.qa_status == "PASSED" or (
+            self.qa_status == "SKIPPED" and not self.scope.selected
+        )
         return (
             self.lint_passed
+            and self.glossary_passed
             and not self.is_fallback
-            and self.qa_status in ("PASSED", "UNAVAILABLE")
+            and qa_ok
         )
 
+    def as_report(self) -> JsonObject:
+        return {
+            "language": self.lang,
+            "success": self.success,
+            "scope": self.scope.as_dict(),
+            "lint": "PASSED" if self.lint_passed else "FAILED",
+            "glossary": "PASSED" if self.glossary_passed else "FAILED",
+            "qa_status": self.qa_status,
+            "qa_score": self.qa_score,
+            "reviewed_keys": len(self.qa_results),
+            "attempts": self.attempts,
+            "audit_trail": self.audit_trail,
+            "qa_results": self.qa_results,
+        }
 
-def run_pipeline(source_content: str, target_lang: str) -> TranslationResult:
-    """
-    단일 언어에 대한 번역 + 린트 + QA 파이프라인을 실행합니다.
-    최대 MAX_ATTEMPTS회 재시도합니다.
-    """
-    result = TranslationResult(target_lang)
-    feedback_list: list[str] = []
+
+def run_pipeline(
+    source_content: str,
+    target_lang: str,
+    *,
+    existing_content: str = "{}",
+    base_source_content: str | None = None,
+    glossary: JsonObject | None = None,
+    sync_all: bool = False,
+) -> TranslationResult:
+    source = json.loads(source_content)
+    existing = json.loads(existing_content)
+    base_source = json.loads(base_source_content) if base_source_content else None
+    scope = plan_translation(source, existing, base_source, sync_all)
+    result = TranslationResult(target_lang, scope)
+    glossary = glossary or {"preserve": [], "entries": []}
+
+    if not scope.selected:
+        merged = _merge_from_source(source, existing, {})
+        result.content = json.dumps(merged, ensure_ascii=False, indent=2)
+        result.lint_passed, lint_message = lint_translation(
+            source_content, result.content
+        )
+        result.glossary_passed = True
+        result.qa_status = "SKIPPED"
+        result.audit_trail.append(f"변경 키 없음 — 기존 번역 보존; {lint_message}")
+        return result
+
+    source_subset = _build_subset(source, scope.selected)
+    source_subset_content = json.dumps(source_subset, ensure_ascii=False)
+    context = build_context(source, scope.selected)
+    feedback: list[str] = []
 
     for attempt in range(1, MAX_ATTEMPTS + 1):
         result.attempts = attempt
-        logger.info(f"[{target_lang}] 번역 시도 {attempt}/{MAX_ATTEMPTS}")
-
-        # 1. 번역
-        translated, is_fallback = translate_with_llm(source_content, target_lang, feedback_list)
-        result.content     = translated
+        translated_content, is_fallback = translate_with_llm(
+            source_subset_content,
+            target_lang,
+            feedback,
+            context=context,
+            glossary=glossary,
+        )
         result.is_fallback = is_fallback
-
         if is_fallback:
-            msg = f"Attempt {attempt}: LLM 장애 — Fallback 번역 사용 (커밋 불가)"
-            logger.warning(msg)
-            result.audit_trail.append(msg)
-            break  # 재시도해도 LLM이 없으면 의미 없음
+            result.audit_trail.append("번역 LLM 장애 — 커밋 차단")
+            break
 
-        # 2. 정적 린트
-        lint_ok, lint_msg = lint_translation(source_content, translated)
+        lint_ok, lint_message = lint_translation(
+            source_subset_content, translated_content
+        )
         result.lint_passed = lint_ok
-        audit_msg = f"Attempt {attempt} / Lint: {'PASSED' if lint_ok else 'FAILED'} — {lint_msg}"
-        result.audit_trail.append(audit_msg)
-        logger.info(f"[{target_lang}] {audit_msg}")
-
+        result.audit_trail.append(
+            f"Attempt {attempt} / Lint: {'PASSED' if lint_ok else 'FAILED'} — {lint_message}"
+        )
         if not lint_ok:
-            feedback_list.append(f"Lint Error: {lint_msg}")
-            continue  # 린트 실패 시 재번역
+            feedback.append(lint_message)
+            continue
 
-        # 3. QA 품질 평가
-        score, critique = evaluate_quality(source_content, translated, target_lang)
-        result.qa_score = score
+        translated = json.loads(translated_content)
+        glossary_ok, glossary_message = validate_glossary(
+            source_subset, translated, target_lang, glossary
+        )
+        result.glossary_passed = glossary_ok
+        result.audit_trail.append(
+            f"Attempt {attempt} / Glossary: {'PASSED' if glossary_ok else 'FAILED'} — {glossary_message}"
+        )
+        if not glossary_ok:
+            feedback.append(glossary_message)
+            continue
 
-        if score == -1:
-            result.qa_status = "UNAVAILABLE"
-            msg = f"Attempt {attempt} / QA: UNAVAILABLE (Lint는 통과) — {critique}"
-            result.audit_trail.append(msg)
-            logger.warning(f"[{target_lang}] {msg}")
-            # QA API가 응답 불가능하지만 Lint를 통과했으로 코밋허용
-            # (GCP LiteLLM이 content=null을 반환하는 호환성 문제)
-            logger.info(f"[{target_lang}] ⚠️ QA UNAVAILABLE — Lint 통과로 코밋 진행")
+        review = evaluate_quality(
+            source_subset_content,
+            translated_content,
+            target_lang,
+            context=context,
+            glossary=glossary,
+        )
+        result.qa_status = review.status
+        result.qa_score = review.score
+        result.qa_results = review.results
+        result.audit_trail.append(
+            f"Attempt {attempt} / QA: {review.status} (score={review.score}) — {review.critique}"
+        )
+        if review.status == "UNAVAILABLE":
             break
+        if review.status == "FAILED":
+            feedback.append(review.critique)
+            continue
 
-        qa_msg = f"Attempt {attempt} / QA Score: {score} — {critique}"
-        result.audit_trail.append(qa_msg)
-        logger.info(f"[{target_lang}] {qa_msg}")
-
-        if score >= QA_PASS_SCORE:
-            result.qa_status = "PASSED"
-            logger.info(f"[{target_lang}] ✅ 검증 완료 (Score: {score})")
+        merged = _merge_from_source(source, existing, translated)
+        result.content = json.dumps(merged, ensure_ascii=False, indent=2)
+        result.lint_passed, final_lint = lint_translation(source_content, result.content)
+        result.glossary_passed = glossary_ok
+        result.audit_trail.append(f"최종 병합 / {final_lint}")
+        if result.lint_passed:
             break
-        else:
-            result.qa_status = "FAILED"
-            feedback_list.append(f"QA Score {score} < {QA_PASS_SCORE}: {critique}")
 
     return result
 
 
-# ──────────────────────────────────────────
-# 메인 진입점
-# ──────────────────────────────────────────
+def _write_report(path: Path, results: list[TranslationResult], args: argparse.Namespace) -> None:
+    report = {
+        "status": "PASSED" if all(result.success for result in results) else "FAILED",
+        "source": str(args.source),
+        "base_source": str(args.base_source) if args.base_source else None,
+        "sync_all": args.sync_all,
+        "translation_model": TRANSLATION_MODEL,
+        "review_model": REVIEW_MODEL,
+        "languages": [result.as_report() for result in results],
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
 
-def main():
-    parser = argparse.ArgumentParser(
-        description="LingoAgent — ko.json → 다국어 번역 파이프라인"
-    )
-    parser.add_argument(
-        "--source", required=True,
-        help="번역 원본 ko.json 파일 경로"
-    )
-    parser.add_argument(
-        "--langs", nargs="+", default=["en-US", "ja-JP"],
-        help="번역 대상 언어 목록 (기본값: en-US ja-JP)"
-    )
-    parser.add_argument(
-        "--output", required=True,
-        help="번역 결과 JSON 파일 저장 디렉토리 경로"
-    )
-    parser.add_argument(
-        "--dry-run", action="store_true",
-        help="번역 및 검증만 수행하고 파일은 저장하지 않음"
-    )
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="LingoAgent 변경 키 번역 배포 게이트")
+    parser.add_argument("--source", required=True, type=Path)
+    parser.add_argument("--base-source", type=Path)
+    parser.add_argument("--langs", nargs="+", default=["en-US", "ja-JP"])
+    parser.add_argument("--output", required=True, type=Path)
+    parser.add_argument("--glossary", type=Path)
+    parser.add_argument("--report", type=Path, default=Path("lingo-report.json"))
+    parser.add_argument("--sync-all", action="store_true")
+    parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
 
-    # 원본 파일 읽기
-    source_path = Path(args.source)
-    if not source_path.exists():
-        logger.error(f"소스 파일을 찾을 수 없습니다: {source_path}")
-        sys.exit(3)
-
     try:
-        source_content = source_path.read_text(encoding="utf-8")
-        json.loads(source_content)  # 유효한 JSON인지 사전 확인
-    except (OSError, json.JSONDecodeError) as e:
-        logger.error(f"소스 파일 읽기 실패: {e}")
+        source = _load_json(args.source, required=True)
+        base_source = _load_json(args.base_source) if args.base_source else None
+        glossary = load_glossary(args.glossary)
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        logger.error("입력 파일 읽기 실패: %s", exc)
         sys.exit(3)
 
-    output_dir = Path(args.output)
-
-    logger.info("=" * 60)
-    logger.info("LingoAgent 번역 파이프라인 시작")
-    logger.info(f"  소스  : {source_path}")
-    logger.info(f"  언어  : {args.langs}")
-    logger.info(f"  출력  : {output_dir}")
-    logger.info(f"  모델  : {LLM_MODEL}")
-    logger.info(f"  게이트웨이: {'설정됨' if LLM_GATEWAY_URL else '미설정 (Fallback 모드)'}")
-    logger.info(f"  Dry-run : {args.dry_run}")
-    logger.info("=" * 60)
-
+    source_content = json.dumps(source, ensure_ascii=False)
+    base_content = (
+        json.dumps(base_source, ensure_ascii=False) if base_source is not None else None
+    )
     results: list[TranslationResult] = []
 
     for lang in args.langs:
-        result = run_pipeline(source_content, lang)
+        lang_code = lang.split("-")[0]
+        output_path = args.output / f"{lang_code}.json"
+        try:
+            existing = _load_json(output_path)
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            logger.error("기존 번역 파일 읽기 실패 (%s): %s", output_path, exc)
+            sys.exit(3)
+
+        result = run_pipeline(
+            source_content,
+            lang,
+            existing_content=json.dumps(existing, ensure_ascii=False),
+            base_source_content=base_content,
+            glossary=glossary,
+            sync_all=args.sync_all,
+        )
         results.append(result)
-
-        # 감사 트레일 출력
-        logger.info(f"\n{'─'*40}")
-        logger.info(f"[{lang}] 결과 요약:")
-        logger.info(f"  is_fallback : {result.is_fallback}")
-        logger.info(f"  lint_passed : {result.lint_passed}")
-        logger.info(f"  qa_status   : {result.qa_status} (score={result.qa_score})")
-        logger.info(f"  attempts    : {result.attempts}")
-        for i, trail in enumerate(result.audit_trail, 1):
-            logger.info(f"  [{i}] {trail}")
-        logger.info("─" * 40)
-
-    # ─── 성공 여부 판정 ───
-    fallback_langs = [r.lang for r in results if r.is_fallback]
-    qa_failed_langs = [r.lang for r in results if not r.success and not r.is_fallback]
-    success_langs = [r.lang for r in results if r.success]
-
-    logger.info("\n" + "=" * 60)
-    logger.info("파이프라인 최종 결과")
-    logger.info(f"  성공      : {success_langs}")
-    logger.info(f"  Fallback  : {fallback_langs}")
-    logger.info(f"  실패      : {qa_failed_langs}")
-
-    # ─── Fallback이 있으면 exit(1) → GitHub Action 실패 ───
-    if fallback_langs:
-        logger.error(
-            f"\n🚫 COMMIT BLOCKED: {fallback_langs} 언어에 Fallback 번역이 사용되었습니다.\n"
-            f"   LLM Gateway 연결을 확인하고 재실행하세요."
+        logger.info(
+            "[%s] selected=%d preserved=%d QA=%s score=%d success=%s",
+            lang,
+            len(result.scope.selected),
+            len(result.scope.preserved),
+            result.qa_status,
+            result.qa_score,
+            result.success,
         )
-        sys.exit(1)
 
-    if qa_failed_langs:
-        logger.error(
-            f"\n🚫 COMMIT BLOCKED: {qa_failed_langs} 언어가 {MAX_ATTEMPTS}회 재시도 후에도 검증 통과에 실패했습니다."
-        )
-        sys.exit(2)
+    try:
+        _write_report(args.report, results, args)
+    except OSError as exc:
+        logger.error("QA 보고서 저장 실패: %s", exc)
+        sys.exit(3)
+
+    failed = [result.lang for result in results if not result.success]
+    if failed:
+        logger.error("COMMIT BLOCKED: 검증 실패 언어=%s", failed)
+        sys.exit(1 if any(result.is_fallback for result in results) else 2)
 
     if not args.dry_run:
-        # ─── 파일 저장 (검증 통과한 언어만) ───
-        output_dir.mkdir(parents=True, exist_ok=True)
+        args.output.mkdir(parents=True, exist_ok=True)
         for result in results:
-            if result.success:
-                # 언어 코드에서 파일명 생성: en-US → en.json
-                lang_code = result.lang.split("-")[0]
-                out_path = output_dir / f"{lang_code}.json"
-                try:
-                    parsed = json.loads(result.content)
-                    out_path.write_text(
-                        json.dumps(parsed, ensure_ascii=False, indent=2),
-                        encoding="utf-8"
-                    )
-                    logger.info(f"✅ 저장 완료: {out_path}")
-                except (OSError, json.JSONDecodeError) as e:
-                    logger.error(f"파일 저장 실패 ({out_path}): {e}")
-                    sys.exit(3)
+            output_path = args.output / f"{result.lang.split('-')[0]}.json"
+            output_path.write_text(result.content + "\n", encoding="utf-8")
+            logger.info("저장 완료: %s", output_path)
 
-        logger.info("\n✅ 모든 번역 완료 — 커밋 준비됨")
-    else:
-        logger.info("\n✅ Dry-run 완료 — 파일 저장 건너뜀")
-
-    sys.exit(0)
+    logger.info("모든 번역 검증 완료 — 커밋 준비됨")
 
 
 if __name__ == "__main__":
