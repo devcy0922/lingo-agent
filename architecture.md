@@ -171,7 +171,9 @@ flowchart LR
     Translate --> Static["JSON · ICU · 고유명사 · 금지어 검사"]
     Static --> Review["변경된 모든 키 언어별 QA"]
     Review -->|"PASSED · critical error 0"| Merge["기존 번역에 안전하게 병합"]
-    Review -->|"FAILED 또는 UNAVAILABLE"| Block["커밋 차단 · QA 보고서 보존"]
+    Review -->|"일부 키 FAILED"| Retry["실패한 키만 피드백 기반 재번역"]
+    Retry --> Review
+    Review -->|"3회 실패 또는 UNAVAILABLE"| Block["커밋 차단 · QA 보고서 보존"]
     Merge --> Report["실제 상태와 점수가 담긴 증거 보고서"]
 ```
 
@@ -189,7 +191,9 @@ flowchart LR
 - 정적 검증은 JSON 구조, 키, ICU 변수, 보존 용어, 필수 번역과 금지 표현을 검사합니다.
 - QA는 첫 N개 샘플이 아니라 이번 실행에서 생성한 모든 키를 작은 batch로 나눠 검사합니다.
 - 의미 정확성, 자연스러움, 용어 정확성, UI 적합성을 각각 5점 척도로 평가합니다.
-- 모든 항목이 4점 이상이고 `critical_errors`가 없어야 통과합니다.
+- 의미 정확성과 용어 정확성은 항목별 4점 이상을 강제하고, 자연스러움과 UI 적합성은 3점 이상이면서 항목 평균이 4점 이상이어야 통과합니다.
+- `critical_errors`가 하나라도 있으면 평균과 관계없이 차단합니다.
+- 일부 키만 기준에 미달하면 통과한 번역은 고정하고, 실패한 키와 점수·비평·이전 번역안을 다음 시도에 전달해 해당 키만 다시 번역합니다.
 - QA 응답 누락, 파싱 실패, Gateway 장애는 `UNAVAILABLE`이며 자동 커밋을 허용하지 않습니다.
 - 번역 모델과 검수 모델은 별도 환경변수로 지정하고, 실행 보고서에는 사용 alias와 실제 판정 상태를 남깁니다.
 - Gateway의 `429`와 일시적 `5xx`는 `Retry-After` 또는 제한된 지수 backoff로 재시도하고, 낮은 RPM Key는 최소 요청 간격을 설정합니다.
