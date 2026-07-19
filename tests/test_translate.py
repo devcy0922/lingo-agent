@@ -140,6 +140,25 @@ class QualityGateTests(unittest.TestCase):
         self.assertFalse(en_ok)
         self.assertFalse(ja_ok)
 
+    def test_english_required_term_is_case_insensitive(self):
+        glossary = {
+            "preserve": [],
+            "entries": [
+                {
+                    "source": "감사 신호",
+                    "targets": {"en-US": "audit events"},
+                    "forbidden": {},
+                }
+            ],
+        }
+        ok, message = translate.validate_glossary(
+            {"audit": "감사 신호를 기록"},
+            {"audit": "Record Audit Events"},
+            "en-US",
+            glossary,
+        )
+        self.assertTrue(ok, message)
+
 
 if __name__ == "__main__":
     unittest.main()

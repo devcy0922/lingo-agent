@@ -241,7 +241,14 @@ def validate_glossary(
             if not source_term or source_term not in source_value:
                 continue
             required_term = entry.get("targets", {}).get(target_lang)
-            if required_term and required_term not in target_value:
+            required_present = (
+                required_term.casefold() in target_value.casefold()
+                if required_term and target_lang.startswith("en")
+                else required_term in target_value
+                if required_term
+                else True
+            )
+            if required_term and not required_present:
                 problems.append(
                     f"{_path_label(path)}: 필수 용어 '{required_term}' 누락"
                 )
