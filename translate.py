@@ -31,16 +31,16 @@ REVIEW_SCHEMA_ATTEMPTS = 2
 TRANSLATION_STRUCTURE_ATTEMPTS = 2
 MAX_ATTEMPTS = 3
 QA_BATCH_SIZE = 8
-QA_MIN_HARD_DIMENSION_SCORE = 4
+QA_MIN_SEMANTIC_SCORE = 3
+QA_MIN_TERMINOLOGY_SCORE = 4
 QA_MIN_SOFT_DIMENSION_SCORE = 3
-QA_MIN_ITEM_AVERAGE = 4.0
+QA_MIN_ITEM_AVERAGE = 3.5
 QA_DIMENSIONS = (
     "semantic_accuracy",
     "naturalness",
     "terminology",
     "ui_fit",
 )
-QA_HARD_DIMENSIONS = ("semantic_accuracy", "terminology")
 QA_SOFT_DIMENSIONS = ("naturalness", "ui_fit")
 
 logging.basicConfig(
@@ -491,9 +491,10 @@ def _quality_item_issues(item: JsonObject) -> list[str]:
         if not 1 <= score <= 5:
             issues.append(f"{dimension} 점수 범위 오류({score})")
 
-    for dimension in QA_HARD_DIMENSIONS:
-        if scores[dimension] < QA_MIN_HARD_DIMENSION_SCORE:
-            issues.append(f"{dimension} {scores[dimension]}점")
+    if scores["semantic_accuracy"] < QA_MIN_SEMANTIC_SCORE:
+        issues.append(f"semantic_accuracy {scores['semantic_accuracy']}점")
+    if scores["terminology"] < QA_MIN_TERMINOLOGY_SCORE:
+        issues.append(f"terminology {scores['terminology']}점")
     for dimension in QA_SOFT_DIMENSIONS:
         if scores[dimension] < QA_MIN_SOFT_DIMENSION_SCORE:
             issues.append(f"{dimension} {scores[dimension]}점")
