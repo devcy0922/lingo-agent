@@ -30,7 +30,17 @@ LLM_REQUEST_ATTEMPTS = 4
 REVIEW_SCHEMA_ATTEMPTS = 2
 MAX_ATTEMPTS = 3
 QA_BATCH_SIZE = 8
-QA_MIN_DIMENSION_SCORE = 4
+QA_MIN_HARD_DIMENSION_SCORE = 4
+QA_MIN_SOFT_DIMENSION_SCORE = 3
+QA_MIN_ITEM_AVERAGE = 4.0
+QA_DIMENSIONS = (
+    "semantic_accuracy",
+    "naturalness",
+    "terminology",
+    "ui_fit",
+)
+QA_HARD_DIMENSIONS = ("semantic_accuracy", "terminology")
+QA_SOFT_DIMENSIONS = ("naturalness", "ui_fit")
 
 logging.basicConfig(
     level=logging.INFO,
@@ -120,6 +130,17 @@ def _merge_from_source(
         return value
 
     return visit(source, ())
+
+
+def _nested_from_leaves(values: dict[PathKey, str]) -> JsonObject:
+    """경로별 문자열 값을 JSON object 구조로 복원합니다."""
+    output: JsonObject = {}
+    for path, value in sorted(values.items()):
+        cursor = output
+        for segment in path[:-1]:
+            cursor = cursor.setdefault(segment, {})
+        cursor[path[-1]] = value
+    return output
 
 
 @dataclass
@@ -427,6 +448,67 @@ class QualityReview:
     results: list[JsonObject] = field(default_factory=list)
 
 
+def _quality_item_issues(item: JsonObject) -> list[str]:
+    """QA 항목의 차단 사유를 결정적인 정책으로 계산합니다."""
+    issues: list[str] = []
+    scores: dict[str, int] = {}
+    for dimension in QA_DIMENSIONS:
+        try:
+            score = int(item.get(dimension, 0))
+        except (TypeError, ValueError):
+            score = 0
+        scores[dimension] = score
+        if not 1 <= score <= 5:
+            issues.append(f"{dimension} 점수 범위 오류({score})")
+
+    for dimension in QA_HARD_DIMENSIONS:
+        if scores[dimension] < QA_MIN_HARD_DIMENSION_SCORE:
+            issues.append(f"{dimension} {scores[dimension]}점")
+    for dimension in QA_SOFT_DIMENSIONS:
+        if scores[dimension] < QA_MIN_SOFT_DIMENSION_SCORE:
+            issues.append(f"{dimension} {scores[dimension]}점")
+
+    average = sum(scores.values()) / len(QA_DIMENSIONS)
+    if average < QA_MIN_ITEM_AVERAGE:
+        issues.append(f"항목 평균 {average:.2f}점")
+
+    critical = item.get("critical_errors") or []
+    if critical:
+        issues.append(f"critical={critical}")
+    return issues
+
+
+def _quality_score(results: list[JsonObject]) -> int:
+    scores = [
+        int(item.get(dimension, 0))
+        for item in results
+        for dimension in QA_DIMENSIONS
+    ]
+    return round(sum(scores) / len(scores) * 20) if scores else 0
+
+
+def _review_feedback(
+    results: list[JsonObject], translated: dict[PathKey, str]
+) -> list[str]:
+    """실패한 번역안과 QA 근거를 다음 번역 시도에 전달합니다."""
+    translated_by_label = {_path_label(path): value for path, value in translated.items()}
+    feedback: list[str] = []
+    for item in results:
+        issues = _quality_item_issues(item)
+        if not issues:
+            continue
+        key = str(item.get("key", ""))
+        scores = ", ".join(
+            f"{dimension}={item.get(dimension, 0)}" for dimension in QA_DIMENSIONS
+        )
+        feedback.append(
+            f"{key}: previous={json.dumps(translated_by_label.get(key, ''), ensure_ascii=False)}, "
+            f"scores=({scores}), blockers={'; '.join(issues)}, "
+            f"critique={item.get('critique', '')}"
+        )
+    return feedback
+
+
 def _chunks(items: list[PathKey], size: int) -> Iterable[list[PathKey]]:
     for index in range(0, len(items), size):
         yield items[index : index + size]
@@ -522,26 +604,16 @@ def evaluate_quality(
                 )
             all_results.extend(indexed[key] for key in expected_keys)
 
-        scores: list[int] = []
         failed: list[str] = []
         for item in all_results:
-            dimensions = [
-                int(item.get(name, 0))
-                for name in (
-                    "semantic_accuracy",
-                    "naturalness",
-                    "terminology",
-                    "ui_fit",
-                )
-            ]
-            scores.extend(dimensions)
-            critical = item.get("critical_errors") or []
-            if min(dimensions) < QA_MIN_DIMENSION_SCORE or critical:
+            issues = _quality_item_issues(item)
+            if issues:
                 failed.append(
-                    f"{item.get('key')}: {item.get('critique', '')}; critical={critical}"
+                    f"{item.get('key')}: {item.get('critique', '')}; "
+                    f"blockers={', '.join(issues)}"
                 )
 
-        score = round(sum(scores) / len(scores) * 20) if scores else 0
+        score = _quality_score(all_results)
         if failed:
             return QualityReview("FAILED", score, " | ".join(failed), all_results)
         return QualityReview("PASSED", score, "모든 변경 키가 품질 기준을 통과했습니다.", all_results)
@@ -619,13 +691,16 @@ def run_pipeline(
         result.audit_trail.append(f"변경 키 없음 — 기존 번역 보존; {lint_message}")
         return result
 
-    source_subset = _build_subset(source, scope.selected)
-    source_subset_content = json.dumps(source_subset, ensure_ascii=False)
-    context = build_context(source, scope.selected)
+    pending_paths = set(scope.selected)
+    accepted_translations: dict[PathKey, str] = {}
+    accepted_reviews: dict[str, JsonObject] = {}
     feedback: list[str] = []
 
     for attempt in range(1, MAX_ATTEMPTS + 1):
         result.attempts = attempt
+        source_subset = _build_subset(source, pending_paths)
+        source_subset_content = json.dumps(source_subset, ensure_ascii=False)
+        context = build_context(source, pending_paths)
         translated_content, is_fallback = translate_with_llm(
             source_subset_content,
             target_lang,
@@ -669,18 +744,53 @@ def run_pipeline(
             glossary=glossary,
         )
         result.qa_status = review.status
-        result.qa_score = review.score
-        result.qa_results = review.results
+        current_reviews = {
+            str(item.get("key")): item for item in review.results if item.get("key")
+        }
+        combined_reviews = {**accepted_reviews, **current_reviews}
+        result.qa_results = [combined_reviews[key] for key in sorted(combined_reviews)]
+        result.qa_score = _quality_score(result.qa_results)
         result.audit_trail.append(
-            f"Attempt {attempt} / QA: {review.status} (score={review.score}) — {review.critique}"
+            f"Attempt {attempt} / QA: {review.status} (score={review.score}, "
+            f"keys={len(pending_paths)}) — {review.critique}"
         )
         if review.status == "UNAVAILABLE":
             break
         if review.status == "FAILED":
-            feedback.append(review.critique)
+            translated_leaves = _leaf_map(translated)
+            failed_labels = {
+                str(item.get("key"))
+                for item in review.results
+                if _quality_item_issues(item)
+            }
+            failed_paths = {
+                path for path in pending_paths if _path_label(path) in failed_labels
+            }
+            if not failed_paths:
+                failed_paths = set(pending_paths)
+            passed_paths = pending_paths - failed_paths
+            for path in passed_paths:
+                accepted_translations[path] = translated_leaves[path]
+                accepted_reviews[_path_label(path)] = current_reviews[_path_label(path)]
+
+            targeted_feedback = _review_feedback(review.results, translated_leaves)
+            feedback = targeted_feedback or [review.critique]
+            pending_paths = failed_paths
+            result.audit_trail.append(
+                f"다음 시도 범위 축소: 실패 {len(failed_paths)}개 / "
+                f"통과 고정 {len(accepted_translations)}개"
+            )
             continue
 
-        merged = _merge_from_source(source, existing, translated)
+        translated_leaves = _leaf_map(translated)
+        for path in pending_paths:
+            accepted_translations[path] = translated_leaves[path]
+            accepted_reviews[_path_label(path)] = current_reviews[_path_label(path)]
+        result.qa_results = [accepted_reviews[key] for key in sorted(accepted_reviews)]
+        result.qa_score = _quality_score(result.qa_results)
+        merged = _merge_from_source(
+            source, existing, _nested_from_leaves(accepted_translations)
+        )
         result.content = json.dumps(merged, ensure_ascii=False, indent=2)
         result.lint_passed, final_lint = lint_translation(source_content, result.content)
         result.glossary_passed = glossary_ok

@@ -140,6 +140,134 @@ class QualityGateTests(unittest.TestCase):
         self.assertEqual("PASSED", review.status)
         self.assertEqual(2, call.call_count)
 
+    def test_soft_dimension_three_passes_when_item_average_is_four(self):
+        response = json.dumps(
+            {
+                "results": [
+                    {
+                        "key": "demo",
+                        "semantic_accuracy": 5,
+                        "naturalness": 3,
+                        "terminology": 5,
+                        "ui_fit": 3,
+                        "critical_errors": [],
+                        "critique": "표현을 더 다듬을 수 있습니다.",
+                    }
+                ]
+            }
+        )
+        with patch.object(translate, "_chat_completion", return_value=response):
+            review = translate.evaluate_quality(
+                json.dumps({"demo": "대표 데모"}),
+                json.dumps({"demo": "Representative Demo"}),
+                "en-US",
+            )
+
+        self.assertEqual("PASSED", review.status)
+        self.assertEqual(80, review.score)
+
+    def test_hard_dimension_three_still_fails(self):
+        response = json.dumps(
+            {
+                "results": [
+                    {
+                        "key": "headline",
+                        "semantic_accuracy": 5,
+                        "naturalness": 4,
+                        "terminology": 3,
+                        "ui_fit": 4,
+                        "critical_errors": [],
+                        "critique": "직무 용어가 부정확합니다.",
+                    }
+                ]
+            }
+        )
+        with patch.object(translate, "_chat_completion", return_value=response):
+            review = translate.evaluate_quality(
+                json.dumps({"headline": "백엔드 엔지니어"}),
+                json.dumps({"headline": "バックエンド担当"}),
+                "ja-JP",
+            )
+
+        self.assertEqual("FAILED", review.status)
+        self.assertIn("terminology 3점", review.critique)
+
+    def test_pipeline_retries_only_failed_keys(self):
+        source = {"title": "제목", "demo": "대표 데모"}
+        first_translation = json.dumps(
+            {"title": "Title", "demo": "Representative Case Demo"}
+        )
+        second_translation = json.dumps({"demo": "Featured Demo"})
+        first_review = translate.QualityReview(
+            "FAILED",
+            90,
+            "demo 자연스러움 미달",
+            [
+                {
+                    "key": "title",
+                    "semantic_accuracy": 5,
+                    "naturalness": 5,
+                    "terminology": 5,
+                    "ui_fit": 5,
+                    "critical_errors": [],
+                    "critique": "",
+                },
+                {
+                    "key": "demo",
+                    "semantic_accuracy": 5,
+                    "naturalness": 2,
+                    "terminology": 5,
+                    "ui_fit": 4,
+                    "critical_errors": [],
+                    "critique": "직역투입니다.",
+                },
+            ],
+        )
+        second_review = translate.QualityReview(
+            "PASSED",
+            100,
+            "통과",
+            [
+                {
+                    "key": "demo",
+                    "semantic_accuracy": 5,
+                    "naturalness": 5,
+                    "terminology": 5,
+                    "ui_fit": 5,
+                    "critical_errors": [],
+                    "critique": "",
+                }
+            ],
+        )
+
+        with patch.object(
+            translate,
+            "translate_with_llm",
+            side_effect=[(first_translation, False), (second_translation, False)],
+        ) as translator, patch.object(
+            translate,
+            "evaluate_quality",
+            side_effect=[first_review, second_review],
+        ):
+            result = translate.run_pipeline(
+                json.dumps(source),
+                "en-US",
+                existing_content="{}",
+                sync_all=True,
+            )
+
+        self.assertTrue(result.success)
+        self.assertEqual(
+            {"title": "Title", "demo": "Featured Demo"},
+            json.loads(result.content),
+        )
+        retried_source = json.loads(translator.call_args_list[1].args[0])
+        self.assertEqual({"demo": "대표 데모"}, retried_source)
+        self.assertIn(
+            "previous=\"Representative Case Demo\"",
+            translator.call_args_list[1].args[2][0],
+        )
+
     def test_glossary_rejects_known_bad_translations(self):
         glossary = {
             "preserve": [],
