@@ -6,8 +6,8 @@
   "scripts": {
     "dev:frontend": "pnpm --filter frontend dev",
     "build:frontend": "pnpm --filter frontend build",
-    "dev:backend": "cd backend && uvicorn main:app --reload --port 9095 --host 0.0.0.0",
-    "start:backend": "cd backend && uvicorn main:app --port 9095 --host 0.0.0.0"
+    "dev:backend": "cd backend && uvicorn main:app --reload --port 47081 --host 0.0.0.0",
+    "start:backend": "cd backend && uvicorn main:app --port 47081 --host 0.0.0.0"
   },
   "devDependencies": {
     "typescript": "^5.2.2"

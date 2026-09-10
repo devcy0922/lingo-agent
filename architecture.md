@@ -1,211 +1,199 @@
-# LingoAgent System Architecture
+# LingoAgent Architecture
 
-LingoAgent는 다국어 번역 리소스(i18n Locale) 관리의 복잡성을 줄이고, 에이전트의 품질 검증 및 린팅을 통해 번역 배포 안정성을 높이는 **AI Localization DevOps Pipeline**입니다. 
+LingoAgent는 한국어 i18n 원문을 기준으로 변경된 번역 키를 생성하고, 구조 검증과 LLM 품질 검수를 통과한 경우에만 소비 저장소의 locale 파일을 갱신하는 번역 배포 게이트다.
 
-본 문서는 LingoAgent 데모 프로젝트의 전체 시스템 설계, 내부 아키텍처 의사 결정 및 상세 데이터/제어 흐름을 명세합니다.
+이 레포에는 서로 다른 두 실행 경로가 있다. `translate.py`가 실제 CI/CD 배포 경로이며, `backend/`는 별도의 로컬 데모 경로다. 두 경로는 현재 동일한 오케스트레이터나 동일한 품질 보장을 공유하지 않는다.
 
----
-
-## 1. System Overview & Architecture Diagram
-
-LingoAgent는 프론트엔드와 백엔드가 결합된 **싱글 컨테이너/싱글 프로세스 데모 아키텍처**를 채택했습니다. 복잡한 멀티컨테이너 네트워크 레이어를 생략하고 로컬/맥미니 환경에서 9095 단일 포트로 전체 라이프사이클을 테스트할 수 있도록 설계되었습니다.
+## 1. 실행 경로의 경계
 
 ```mermaid
-graph TD
-    %% 클라이언트 및 네트워크 인터페이스
-    subgraph Client_Side ["Client (React SPA)"]
-        UI["App Console (Vite React)"]
-        Dashboard["Job Dashboard (Polling)"]
-        Diff["Diff Viewer (Highlighting)"]
+flowchart TB
+    subgraph Consumer["소비 저장소: devcy0922.github.io"]
+        Source["docs/public/locales/ko.json 원문"]
+        Existing["docs/public/locales/en.json, ja.json 기존 번역"]
+        Workflow[".github/workflows/translate-i18n.yml"]
+        Output["locale 파일 변경"]
+        Pages["VitePress build / GitHub Pages"]
     end
-
-    subgraph Service_Engine ["LingoAgent Core Service (FastAPI)"]
-        API["FastAPI API Gateway"]
-        SPAServer["Catch-all SPA Static Server"]
-        DB["SQLite Storage (SQLAlchemy)"]
-        
-        subgraph Agent_Orchestrator ["Agent Engine (Async Task Executor)"]
-            Executor["LingoAgent Executor"]
-            Linter["ICU/Format Parser (Lint)"]
-            Judge["Quality Judge (LLM-as-a-Judge)"]
-        end
+    subgraph Gate["LingoAgent CI Gate — authoritative"]
+        CLI["translate.py / translate_markdown.py"]
+        Report["lingo-report.json"]
     end
-
-    %% 외부 연동 레이어
-    subgraph Infra_Layer ["External Infrastructure"]
-        LLM["LiteLLM / vLLM Gateway (Port 8000)"]
+    subgraph Demo["LingoAgent Web Demo — separate path"]
+        API["FastAPI"]
+        Agent["backend/agent.py"]
+        DB["SQLite"]
+        Files["data/output/*.json"]
+        UI["React Console"]
     end
-
-    subgraph Local_Storage ["Local Disk Artifacts"]
-        LocalFiles["data/output/ (*.json)"]
-    end
-
-    %% 관계 흐름도
-    UI -->|1. Create Job| API
-    Dashboard -->|Poll Status| API
-    API -->|Create State Record| DB
-    API -->|Trigger background task| Executor
-    
-    Executor -->|Fetch Target & Glossary| DB
-    Executor -->|2. Translate Request| LLM
-    Executor -->|3. Format Check| Linter
-    Executor -->|4. Grade Quality| Judge
-    Judge -->|Score & Critique feedback| Executor
-    
-    Executor -->|Update Result & Score| DB
-    
-    UI -->|5. Approve Job| API
-    API -->|6. Dump Translation Assets| LocalFiles
-    SPAServer -->|Mount Static assets| UI
+    Source --> Workflow --> CLI
+    Existing --> CLI
+    CLI -->|PASS only| Output --> Pages
+    CLI --> Report
+    UI --> API --> DB
+    API --> Agent
+    Agent --> DB
+    Agent --> Files
 ```
 
----
+`translate.py`와 `translate_markdown.py`는 소비 저장소의 GitHub Actions에서 검증된 LingoAgent commit SHA로 checkout되어 실행된다. 이 경로가 자동 커밋의 유일한 승인 게이트다.
 
-## 2. 핵심 아키텍처 의사결정 (Architectural Decisions)
+`backend/`는 작업 생성, 상태 polling, diff 확인, 수동 승인 UI를 보여주기 위한 데모다. 현재 구현은 CI 경로와 별개이며, 장애 시 fallback과 기본 QA 점수를 사용하므로 production 배포 게이트로 간주하면 안 된다.
 
-### ① NGINX / PostgreSQL 인프라 배제 및 싱글 포트 SPA Catch-all 구성
-- **배경**: 데모 배포 시 NGINX 프록시와 PostgreSQL DB를 Compose로 띄우는 구조는 개발망의 포트 충돌 및 주소 변동으로 오류를 빈번하게 유발합니다.
-- **결정**: 
-  - FastAPI의 static mount 기능과 catch-all 라우터(`spa_fallback`)를 결합하여 **프론트엔드 빌드본(`dist`)을 백엔드가 단일 포트(9095)에서 직접 서빙**하도록 강제했습니다.
-  - 데이터는 파일 기반인 **SQLite**를 사용해 영속성을 유지하되, SQLAlchemy 세션을 활용해 추후 엔터프라이즈 마이그레이션이 용이하도록 오알엠 레이어를 격리했습니다.
-
-### ② ICU 메시지 포맷 검증 린터 (Static Linter) 선행 검증
-- **배경**: LLM 번역 결과물에서 다국어 치환 변수(예: `{count}`, `{username}`)가 멋대로 다른 언어로 번역되거나 유실되는 경우가 빈번합니다.
-- **결정**: 
-  - 무조건적인 LLM 품질 채점 이전에 백엔드에서 정규식 기반의 **구문 린팅(`lint_translation`)을 선행**하도록 설계했습니다.
-  - 변수의 짝이 맞지 않거나 훼손된 경우 곧바로 `FAILED` 판정을 내리고 에이전트 내부적으로 이전 오류 사유를 프롬프트에 동적 반영하여 자동 재번역을 시도합니다. 이로써 불필요한 LLM QA 리뷰 API 호출 횟수를 대폭 절감했습니다.
-
-### ③ LLM Gateway 장애 극복 및 시뮬레이션 Fallback (Durable Demo)
-- **배경**: 포트폴리오 시연 도중 네트워크 장애 또는 외부 LLM API(LiteLLM) 연동 실패로 인해 데모 전체가 마비되는 리스크가 존재합니다.
-- **결정**: LLM Gateway 연결 실패 시 예외를 잡아 내부 로컬 규칙 기반 번역 시뮬레이터(`simulate_fallback_translation`)로 자동 우회하도록 예외 처리 구조를 짰습니다. 외부 API 상태와 무관하게 프론트엔드 대시보드에서 에이전트가 돌고 승인되는 흐름은 언제나 완결성 있게 시연됩니다.
-
-### ④ 버퍼링 Gateway를 고려한 Timeout 계약
-- **배경**: GitHub Actions에서 GCP API Gateway를 거쳐 사설 LLM에 전체 Locale 번역을 요청하면, Gateway가 응답을 버퍼링하는 동안 고정 90초 Read Timeout을 초과할 수 있습니다. 이 경우 모델이 정상 추론 중이어도 Fallback으로 오판되어 번역 커밋이 차단됩니다.
-- **결정**:
-  - 번역과 QA 호출의 Timeout을 `LLM_TIMEOUT_SECONDS` 환경변수로 통합하고 기본값을 240초로 설정합니다.
-  - Fallback 번역은 계속 커밋 불가 상태로 유지해 장애 시 잘못된 번역이 배포되지 않도록 합니다.
-  - 실행 환경은 모델과 Gateway 지연 특성에 맞춰 Timeout만 조정할 수 있으며, 코드의 보안·품질 판정 기준은 변경하지 않습니다.
-
----
-
-## 3. 데이터 흐름 및 상태 전이 (State Transitions)
-
-번역 작업(`Job`)은 생성부터 배포까지 다음과 같은 상태 흐름을 가집니다.
-
-```mermaid
-stateDiagram-v2
-    [*] --> PENDING : 개발자가 ko-KR.json 제출
-    PENDING --> TRANSLATING : 백그라운드 태스크 기동
-    
-    state TRANSLATING {
-        [*] --> LLM_Translation
-        LLM_Translation --> Static_Linter : 번역 텍스트 수신
-        Static_Linter --> LLM_QA_Judge : Linter 통과 (PASSED)
-        Static_Linter --> LLM_Translation : Linter 실패 (Attempt < 3)
-        LLM_QA_Judge --> Success_Check : 점수 산출
-        Success_Check --> LLM_Translation : 85점 미만 (Attempt < 3)
-    }
-
-    TRANSLATING --> REVIEW_READY : 모든 타깃 언어 검증 통과
-    TRANSLATING --> FAILED : 3회 이상 실패 시
-    
-    REVIEW_READY --> APPROVED : 개발자/리뷰어가 UI에서 승인 버튼 클릭
-    APPROVED --> [*] : data/output/*.json 파일 배포 및 완료
-```
-
----
-
-## 4. 데이터베이스 엔티티 구조 (Entity Relationship Diagram)
-
-SQLite에 적재되는 테이블 스키마 구조입니다.
-
-```mermaid
-erDiagram
-    JOBS {
-        string id PK "UUID"
-        string status "PENDING, TRANSLATING, REVIEW_READY, APPROVED, FAILED"
-        string source_lang "Default: ko-KR"
-        json target_langs "List of target languages (e.g. ['en-US', 'ja-JP'])"
-        text source_content "Raw ko-KR JSON content"
-        datetime created_at
-        datetime updated_at
-    }
-
-    TRANSLATIONS {
-        int id PK "Auto Increment"
-        string job_id FK "References JOBS.id"
-        string target_lang "e.g. en-US, ja-JP"
-        text translated_content "Translated JSON content"
-        string lint_status "PENDING, PASSED, FAILED"
-        int quality_score "LLM-as-a-Judge Score (0-100)"
-        json feedback_log "List of verification attempts and critique logs"
-        int attempts "Current retry attempts (Max: 3)"
-    }
-
-    JOBS ||--o{ TRANSLATIONS : "has many"
-```
-
----
-
-## 5. API 명세 (Key API Endpoints)
-
-| Method | Endpoint | Description | Payload / Response |
-| :--- | :--- | :--- | :--- |
-| **POST** | `/api/jobs` | 신규 번역 작업 요청 (에이전트 구동) | Input: `JobCreate` / Response: `JobResponse` |
-| **GET** | `/api/jobs` | 번역 작업 목록 조회 (대시보드 리스트) | Response: `List[JobResponse]` |
-| **GET** | `/api/jobs/{job_id}` | 작업 진행 상황 상세 폴링 및 결과 조회 | Response: `JobResponse` |
-| **POST** | `/api/jobs/{job_id}/approve` | 다국어 리소스 최종 파일 배포 승인 | Response: `JobResponse` |
-| **DELETE** | `/api/jobs/{job_id}` | 번역 작업 및 연관 번역 이력 삭제 | Response: `{"detail": "Job successfully deleted"}` |
-
----
-
-## 6. Git 기반 번역 배포 게이트
-
-GitHub Actions에서 사용하는 독립 실행 CLI는 서비스형 Job과 별도로 다음 불변조건을 지킵니다.
+## 2. CI 번역 처리 흐름
 
 ```mermaid
 flowchart LR
-    Diff["원본 diff 분석"] --> Scope["added · changed · missing 분류"]
-    Scope --> Context["키 유형 · 주변 문구 · 용어집 결합"]
-    Context --> Translate["선택된 키만 번역"]
-    Translate --> Normalize["점 표기 평면 키를 원본 JSON 구조로 정규화"]
-    Normalize --> Static["JSON · ICU · 고유명사 · 금지어 검사"]
-    Static -->|"구조 오류"| Repair["동일 QA 회차에서 구조 피드백 재생성"]
-    Repair --> Normalize
-    Static --> Review["변경된 모든 키 언어별 QA"]
-    Review -->|"PASSED · critical error 0"| Merge["기존 번역에 안전하게 병합"]
-    Review -->|"일부 키 FAILED"| Retry["실패한 키만 피드백 기반 재번역"]
-    Retry --> Review
-    Review -->|"3회 실패 또는 UNAVAILABLE"| Block["커밋 차단 · QA 보고서 보존"]
-    Merge --> Report["실제 상태와 점수가 담긴 증거 보고서"]
+    A[현재 ko.json] --> B[원본 diff 계산]
+    B --> C[added / changed / missing / preserved]
+    C --> D[선택 키 subset 구성]
+    D --> E[govail/thinker 번역]
+    E --> F[JSON shape normalize]
+    F --> G[정적 검증]
+    G -->|실패| E
+    G --> H[Glossary 검증]
+    H -->|실패| E
+    H --> I[govail/thinker QA Judge]
+    I -->|일부 실패| J[실패 키만 feedback 재번역]
+    J --> E
+    I -->|PASS| K[기존 번역과 안전한 병합]
+    K --> L[전체 locale 최종 lint]
+    L --> M[QA report]
+    M -->|PASS| N[파일 저장 / 후속 commit]
+    M -->|fallback, lint, QA 실패| X[커밋 차단]
 ```
 
-### 변경 범위 계약
+처리 계약은 다음과 같다.
 
-- `added`: 기준 원본에는 없고 현재 원본에 추가된 키
-- `changed`: 기준 원본과 현재 원본의 값이 달라진 키
-- `missing`: 현재 원본에는 있으나 대상 언어 파일에 없는 키
-- `preserved`: 위 세 범주에 속하지 않아 기존 번역을 그대로 유지한 키
-- 전체 재번역은 명시적인 `--sync-all`에서만 허용하며 일반 push에서는 사용하지 않습니다.
-- 원본에서 제거된 키는 최종 병합 시 대상 언어에서도 제거해 key parity를 유지합니다.
+1. 원문과 대상 언어 파일을 읽고 `--base-source`가 있으면 기준 원문과 비교한다.
+2. 추가·변경·누락 키만 번역한다. 기존 번역은 보존하며 전체 재번역은 `--sync-all`에서만 허용한다.
+3. 선택된 키만 원래의 중첩 JSON 구조로 모델에 전달한다.
+4. 1차 테스트에서는 번역과 QA 모두 `govail/thinker`를 사용한다.
+5. 평면 점 표기 키는 선택 범위가 정확히 일치할 때만 중첩 구조로 복원한다.
+6. JSON, 키 일치, ICU 변수, glossary, 필수 번역·금지 표현을 결정적으로 검사한다.
+7. QA는 생성된 모든 키를 batch로 검사하고, 실패 키만 feedback과 함께 재시도한다.
+8. fallback, QA 장애, 구조 오류, 재시도 한도 초과는 커밋을 차단한다.
+9. 통과한 결과만 기존 대상 언어 파일과 병합하고 report를 남긴다.
 
-### 품질 게이트 계약
+## 3. 상태와 불변조건
 
-- 정적 검증은 JSON 구조, 키, ICU 변수, 보존 용어, 필수 번역과 금지 표현을 검사합니다.
-- 모델이 `career.link`처럼 점 표기 평면 키를 반환하면 선택 범위와 정확히 일치하는 경우에만 원본 중첩 구조로 결정적으로 복원합니다.
-- 키 누락·추가 등 복원할 수 없는 구조 오류는 품질 재시도 횟수를 소모하지 않고 같은 QA 회차 안에서 한 번 재생성합니다.
-- QA는 첫 N개 샘플이 아니라 이번 실행에서 생성한 모든 키를 작은 batch로 나눠 검사합니다.
-- 의미 정확성, 자연스러움, 용어 정확성, UI 적합성을 각각 5점 척도로 평가합니다.
-- 용어 정확성은 항목별 4점 이상을 강제합니다. 의미 정확성·자연스러움·UI 적합성은 3점 이상이면서 항목 평균이 3.5점 이상이어야 통과합니다.
-- 의미 정확성 3점은 개선 권고로 기록하되 단독 차단 사유로 사용하지 않고, 2점 이하이거나 `critical_errors`가 동반될 때 차단합니다.
-- `critical_errors`가 하나라도 있으면 평균과 관계없이 차단합니다.
-- 일부 키만 기준에 미달하면 통과한 번역은 고정하고, 실패한 키와 점수·비평·이전 번역안을 다음 시도에 전달해 해당 키만 다시 번역합니다.
-- QA 응답 누락, 파싱 실패, Gateway 장애는 `UNAVAILABLE`이며 자동 커밋을 허용하지 않습니다.
-- 번역 모델과 검수 모델은 별도 환경변수로 지정하고, 실행 보고서에는 사용 alias와 실제 판정 상태를 남깁니다.
-- Gateway의 `429`와 일시적 `5xx`는 `Retry-After` 또는 제한된 지수 backoff로 재시도하고, 낮은 RPM Key는 최소 요청 간격을 설정합니다.
+CI 성공 조건:
 
-### 재현성 계약
+```text
+success
+= lint_passed
+  && glossary_passed
+  && qa_status == PASSED (또는 변경 키 없음)
+  && is_fallback == false
+```
 
-- 소비 저장소는 LingoAgent의 `main`이 아니라 검증된 commit SHA를 checkout합니다.
-- 커밋 메시지는 고정 문구가 아니라 생성된 QA 보고서의 실제 상태와 점수를 사용합니다.
-- QA 보고서는 성공·실패 여부와 관계없이 CI artifact로 보존합니다.
+- 대상 locale의 문자열 leaf key 집합은 원문과 동일하다.
+- ICU 변수 집합은 원문과 번역문에서 동일하다.
+- 변경되지 않은 기존 번역은 `--sync-all`이 아니면 덮어쓰지 않는다.
+- QA를 받지 못한 결과는 성공으로 판정하지 않는다.
+- fallback 결과는 성공이나 자동 커밋으로 전환되지 않는다.
+- 부분 실패 시 통과 키는 고정하고 실패 키만 다시 번역한다.
+- report가 성공을 증명하지 못하면 커밋하지 않는다.
+
+## 4. 1차 통합 테스트: devcy0922.github.io
+
+대상 경로는 `/srv/demo/devcy0922.github.io`다. 현재 대상 저장소에는 다음 workflow만 존재한다.
+
+- `.github/workflows/ci.yml`: VitePress build 검증
+- `.github/workflows/deploy.yml`: `main`의 GitHub Pages 배포
+
+현재 locale 파일과 번역 workflow는 아직 없다. 따라서 첫 테스트는 기존 번역을 검증하는 테스트가 아니라 locale 계약을 추가하고 LingoAgent gate를 처음 연결하는 통합 테스트다.
+
+1차 목표 계약:
+
+```text
+docs/public/locales/ko.json          source of truth
+docs/public/locales/en.json          generated target
+docs/public/locales/ja.json          generated target
+docs/public/locales/ko.previous.json diff baseline
+.github/workflows/translate-i18n.yml translation gate
+lingo-report.json                    CI artifact
+```
+
+검증할 항목:
+
+- `ko.json` 변경 시에만 번역 workflow가 실행되는가
+- `en.json`과 `ja.json`이 같은 key structure를 유지하는가
+- `govail/thinker` 호출 실패가 자동 커밋으로 이어지지 않는가
+- 변경·누락 키만 번역되고 기존 번역이 보존되는가
+- 성공·실패 양쪽에서 QA report가 남는가
+- 통과 후에만 locale 변경이 `main`에 반영되고 Pages build가 실행되는가
+
+소비 저장소 workflow는 checkout, 환경 준비, LingoAgent 실행, secret 주입, report artifact 보존, 성공 시 commit/PR, 실패 시 publish 차단만 담당한다. 번역 범위 계산과 품질 판정은 LingoAgent에 둔다.
+
+Markdown 콘텐츠는 `translate_markdown.py`가 처리한다. 이 adapter는 frontmatter와 fenced code/Mermaid 블록을 원문 그대로 보존하고 나머지 Markdown segment만 `govail/thinker`에 전달한다. Gateway 오류나 빈 응답에는 fallback하지 않는다.
+
+## 5. 웹 데모 경로의 현재 계약
+
+```text
+POST /api/jobs
+  -> SQLite Job 생성
+  -> FastAPI BackgroundTasks
+  -> 언어별 LLM 번역
+  -> 정적 lint
+  -> LLM QA score
+  -> Translation 저장
+  -> REVIEW_READY / QA_FAILED / DEGRADED / FAILED
+  -> POST /api/jobs/{id}/approve
+  -> data/output/*.json 기록
+```
+
+이 경로는 현재 다음 이유로 CI gate와 동일한 보장으로 설명하면 안 된다.
+
+- LLM 장애 시 local fallback을 표시하지만 승인 게이트를 통과시키지 않는다.
+- QA 장애는 `qa_status=UNAVAILABLE` 및 `DEGRADED`로 표시하며 점수를 성공값으로 대체하지 않는다.
+- `is_fallback`, `qa_status`, lint 결과와 점수 미달을 작업 상태에 반영한다.
+- 재시작 resume, idempotency, lease/lock, cancellation이 없다.
+- 승인 파일 출력이 원자적 publish가 아니며 rollback이 없다.
+- 인증·인가 없이 승인 API가 노출되고 CORS가 전체 허용이다.
+
+웹 데모의 사용자 계약은 다음과 같다.
+
+1. 사용자는 한국어 원문 JSON과 대상 언어를 입력한다.
+2. 시스템은 대상 언어별 번역 후보를 만들고, JSON 구조/변수 보존 lint와 품질 QA를 순서대로 수행한다.
+3. 모든 대상 언어가 `lint=PASSED`, `qa_status=PASSED`, `quality_score>=85`, `is_fallback=false`일 때만 `REVIEW_READY`가 된다.
+4. `REVIEW_READY`에서 승인하면 `data/output/ko-KR.json`과 대상 언어 JSON이 생성된다. 그 외 상태에서는 승인할 수 없다.
+
+## 6. API와 저장 모델
+
+| Method | Endpoint | 책임 |
+|---|---|---|
+| POST | `/api/jobs` | 원문 JSON과 대상 언어로 데모 작업 생성 |
+| GET | `/api/jobs` | 작업 목록 조회 |
+| GET | `/api/jobs/{job_id}` | 작업 및 언어별 결과 polling |
+| POST | `/api/jobs/{job_id}/approve` | 데모 output 파일 기록 |
+| DELETE | `/api/jobs/{job_id}` | 작업 및 번역 이력 삭제 |
+
+- `jobs`: 원문, 대상 언어, 데모 작업 상태, 승인 메타데이터
+- `translations`: 언어별 결과, lint/QA 상태, 점수, feedback, 시도 횟수
+
+SQLite는 데모 영속성 저장소일 뿐 CI 배포 artifact의 source of truth가 아니다. CI의 source of truth는 소비 저장소의 Git 파일과 Git history다.
+
+## 7. 모델 및 운영 설정
+
+```text
+LLM_TRANSLATION_MODEL=govail/thinker
+LLM_REVIEW_MODEL=govail/thinker
+LLM_GATEWAY_URL=<Gateway endpoint>
+LLM_API_KEY=<CI secret>
+LLM_TIMEOUT_SECONDS=240
+```
+
+모델은 번역 결과의 권위자가 아니다. 모델 출력은 구조·용어·품질 검증을 통과해야만 배포 후보가 된다.
+
+## 8. 향후 hardening 범위
+
+다음 항목은 현재 구현되었다고 주장하지 않는다.
+
+- durable worker와 재시작 복구
+- idempotency key 및 중복 실행 방지
+- atomic artifact publish
+- 인증·인가 및 승인자 권한 모델
+- target language allowlist와 path safety
+- schema migration
+- 구조화된 metrics, tracing, alerting

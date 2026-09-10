@@ -4,7 +4,9 @@ export interface Translation {
   target_lang: string;
   translated_content: string | null;
   lint_status: string;
+  qa_status: string;
   quality_score: number;
+  is_fallback: boolean;
   feedback_log: string[];
   attempts: number;
 }
@@ -18,11 +20,13 @@ export interface Job {
   created_at: string;
   updated_at: string;
   translations: Translation[];
+  approved_by?: string | null;
+  approval_notes?: string | null;
 }
 
-// Vite 개발서버(5173)인 경우 백엔드 포트(9095)로 호스트 강제 변경
-const API_BASE = window.location.port === "5173" 
-  ? "http://localhost:9095/api" 
+// Vite 개발서버(47080)인 경우 백엔드 포트(47081)로 호스트 강제 변경
+const API_BASE = window.location.port === "47080"
+  ? "http://localhost:47081/api"
   : "/api";
 
 export async function getJobs(): Promise<Job[]> {

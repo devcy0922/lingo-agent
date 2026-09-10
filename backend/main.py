@@ -8,11 +8,11 @@ from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 from typing import List
 
-from .config import settings
-from .database import engine, Base, get_db
-from .models import Job, Translation
-from .schemas import JobCreate, JobResponse, JobApprove
-from .agent import run_lingo_agent_loop
+from config import settings
+from database import engine, Base, get_db
+from models import Job, Translation
+from schemas import JobCreate, JobResponse, JobApprove
+from agent import run_lingo_agent_loop
 
 # DB 테이블 생성
 Base.metadata.create_all(bind=engine)
@@ -35,6 +35,11 @@ app.add_middleware(
 # -----------------
 # API 엔드포인트
 # -----------------
+
+@app.get("/healthz")
+def healthz():
+    return {"status": "ok"}
+
 
 @app.post("/api/jobs", response_model=JobResponse)
 def create_job(payload: JobCreate, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
@@ -86,6 +91,16 @@ def approve_job(job_id: str, payload: JobApprove, db: Session = Depends(get_db))
     if job.status != "REVIEW_READY" and job.status != "APPROVED":
         raise HTTPException(status_code=400, detail=f"Cannot approve job in '{job.status}' state.")
 
+    gate_passed = all(
+        trans.lint_status == "PASSED"
+        and trans.qa_status == "PASSED"
+        and trans.quality_score >= 85
+        and not trans.is_fallback
+        for trans in job.translations
+    )
+    if not gate_passed:
+        raise HTTPException(status_code=400, detail="All target translations must pass lint and QA before approval.")
+
     # 번역 데이터 파일로 쓰기 (SQLite -> 로컬 스토리지 Artifact 방출)
     try:
         os.makedirs(settings.OUTPUT_DIR, exist_ok=True)
@@ -105,6 +120,8 @@ def approve_job(job_id: str, payload: JobApprove, db: Session = Depends(get_db))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to output translation files: {str(e)}")
 
+    job.approved_by = payload.approved_by
+    job.approval_notes = payload.notes
     job.status = "APPROVED"
     db.commit()
     db.refresh(job)

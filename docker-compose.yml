@@ -1,0 +1,34 @@
+services:
+  lingo-agent:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: lingo-agent
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      PORT: 47081
+      HOST: 0.0.0.0
+      DATABASE_URL: sqlite:///../data/db.sqlite3
+      OUTPUT_DIR: ../data/output
+    volumes:
+      - lingo_data:/app/data
+    networks:
+      - shared_ai_net
+    labels:
+      edge.enable: "true"
+      edge.id: "lingo-agent"
+      edge.name: "LingoAgent"
+      edge.domain: "lingo.govail.cloud"
+      edge.port: "47081"
+      edge.sso: "true"
+      edge.health_path: "/healthz"
+
+networks:
+  shared_ai_net:
+    external: true
+    name: ${SHARED_NETWORK_NAME:-shared_ai_net}
+
+volumes:
+  lingo_data:
+    name: lingo-agent-data

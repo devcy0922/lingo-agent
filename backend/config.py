@@ -2,7 +2,7 @@ import os
 from pydantic_settings import BaseSettings
 
 class Settings(BaseSettings):
-    PORT: int = 9095
+    PORT: int = 47081
     HOST: str = "0.0.0.0"
     
     # SQLite 기본 DB 경로 설정
@@ -10,6 +10,7 @@ class Settings(BaseSettings):
     
     # LLM Gateway 설정: 공개 코드에 내부 주소 기본값을 두지 않는다.
     LLM_GATEWAY_URL: str
+    LLM_API_KEY: str = ""
     LLM_MODEL: str = "meta-llama/Meta-Llama-3-8B-Instruct"
     
     # 가상 Output 경로
