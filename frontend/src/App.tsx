@@ -74,14 +74,27 @@ function App() {
     <div className="app-container">
       <header>
         <div className="logo-section">
-          <h1>LingoAgent</h1>
-          <p>Agentic i18n Translation & Validation Pipeline Console</p>
+          <h1>LingoAgent 번역 배포 게이트</h1>
+          <p>한국어 원문에서 번역 후보를 만들고, 검증을 통과한 결과만 내보냅니다.</p>
         </div>
         <div style={{ fontSize: "0.85rem", color: "var(--text-muted)", display: "flex", gap: "1rem" }}>
-          <span>레포지토리: lingo-agent</span>
-          <span>상태: Live ⚡</span>
+          <span>로컬 데모</span>
         </div>
       </header>
+
+      <section className="purpose-card">
+        <div>
+          <strong>이 화면에서 바뀌는 것</strong>
+          <p>승인 시 <code>data/output/</code>에 <code>ko-KR.json</code>과 대상 언어 JSON이 생성됩니다.</p>
+        </div>
+        <div className="workflow-steps" aria-label="번역 처리 단계">
+          <span><b>1</b> 원문 입력</span>
+          <span className="step-arrow">→</span>
+          <span><b>2</b> 번역·검증</span>
+          <span className="step-arrow">→</span>
+          <span><b>3</b> 승인·내보내기</span>
+        </div>
+      </section>
 
       <div className="main-grid">
         {/* 사이드바 영역 */}
@@ -116,9 +129,9 @@ function App() {
               }}
             >
               <div style={{ fontSize: "3rem", marginBottom: "1rem" }}>🤖</div>
-              <h2 style={{ border: "none", padding: 0 }}>번역 작업을 선택하거나 생성하세요</h2>
+              <h2 style={{ border: "none", padding: 0 }}>작업을 만들면 여기서 결과를 확인합니다</h2>
               <p style={{ fontSize: "0.9rem", marginTop: "0.5rem", maxWidth: "400px" }}>
-                에이전트가 한국어 리소스를 읽어 다국어 번역을 자율 수행하고, ICU 포맷 린팅 및 LLM 품질 채점을 실시간 진행합니다.
+                번역 후보, 변수 보존 검사, 품질 판정 결과를 언어별로 확인한 뒤 승인할 수 있습니다.
               </p>
             </div>
           )}

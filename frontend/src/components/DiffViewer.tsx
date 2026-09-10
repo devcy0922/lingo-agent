@@ -50,7 +50,17 @@ export const DiffViewer: React.FC<DiffViewerProps> = ({ sourceContent, translate
     });
   };
 
-  const allKeys = Array.from(new Set([...Object.keys(sourceObj), ...Object.keys(translatedObj)]));
+  const flatten = (value: any, prefix = ""): Record<string, any> => {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return { [prefix]: value };
+    return Object.entries(value).reduce<Record<string, any>>((result, [key, child]) => {
+      const path = prefix ? `${prefix}.${key}` : key;
+      return { ...result, ...flatten(child, path) };
+    }, {});
+  };
+
+  const sourceFlat = flatten(sourceObj);
+  const translatedFlat = flatten(translatedObj);
+  const allKeys = Array.from(new Set([...Object.keys(sourceFlat), ...Object.keys(translatedFlat)]));
 
   return (
     <div style={{ marginTop: "1rem" }}>
@@ -70,8 +80,10 @@ export const DiffViewer: React.FC<DiffViewerProps> = ({ sourceContent, translate
             </thead>
             <tbody>
               {allKeys.map((key) => {
-                const srcVal = sourceObj[key] ?? <span style={{ color: "var(--error)", fontStyle: "italic" }}>[삭제됨]</span>;
-                const tgtVal = translatedObj[key] ?? <span style={{ color: "var(--error)", fontStyle: "italic" }}>[누락됨]</span>;
+                const srcExists = Object.prototype.hasOwnProperty.call(sourceFlat, key);
+                const tgtExists = Object.prototype.hasOwnProperty.call(translatedFlat, key);
+                const srcVal = srcExists ? sourceFlat[key] : <span style={{ color: "var(--error)", fontStyle: "italic" }}>[삭제됨]</span>;
+                const tgtVal = tgtExists ? translatedFlat[key] : <span style={{ color: "var(--error)", fontStyle: "italic" }}>[누락됨]</span>;
 
                 return (
                   <tr key={key} className="diff-row">

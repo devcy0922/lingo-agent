@@ -15,6 +15,8 @@ export const JobDashboard: React.FC<JobDashboardProps> = ({ jobs, selectedJobId,
       case "VALIDATING": return "badge-validating";
       case "REVIEW_READY": return "badge-review_ready";
       case "APPROVED": return "badge-approved";
+      case "QA_FAILED": return "badge-failed";
+      case "DEGRADED": return "badge-degraded";
       case "FAILED": return "badge-failed";
       default: return "badge-pending";
     }
@@ -23,10 +25,12 @@ export const JobDashboard: React.FC<JobDashboardProps> = ({ jobs, selectedJobId,
   const getStatusLabel = (status: string) => {
     switch (status.toUpperCase()) {
       case "PENDING": return "대기 중";
-      case "TRANSLATING": return "번역 중 🤖";
+      case "TRANSLATING": return "번역·검증 중 🤖";
       case "VALIDATING": return "품질 검증 중 🔍";
       case "REVIEW_READY": return "검토 대기";
       case "APPROVED": return "승인 완료 (배포)";
+      case "QA_FAILED": return "품질 기준 미달";
+      case "DEGRADED": return "LLM/QA 장애 · 승인 불가";
       case "FAILED": return "번역 실패 ❌";
       default: return status;
     }
@@ -34,7 +38,8 @@ export const JobDashboard: React.FC<JobDashboardProps> = ({ jobs, selectedJobId,
 
   return (
     <div className="card" style={{ maxHeight: "550px", overflowY: "auto" }}>
-      <h2>2. 번역 작업 모니터링</h2>
+      <h2>2. 작업 상태</h2>
+      <p className="card-intro">작업을 선택하면 언어별 결과와 승인 가능 여부가 표시됩니다.</p>
       <div style={{ marginTop: "1rem" }}>
         {jobs.length === 0 ? (
           <div style={{ color: "var(--text-muted)", fontSize: "0.9rem", textAlign: "center", padding: "2rem 0" }}>

@@ -24,7 +24,11 @@ class TranslationResponse(TranslationBase):
 
 class JobCreate(BaseModel):
     source_content: str = Field(..., description="원본 ko-KR JSON 내용")
-    target_langs: List[str] = Field(default=["en-US", "ja-JP"], description="번역 대상 타깃 언어 목록")
+    target_langs: List[str] = Field(
+        default_factory=lambda: ["en-US", "ja-JP"],
+        min_length=1,
+        description="번역 대상 타깃 언어 목록",
+    )
 
 
 class JobResponse(BaseModel):

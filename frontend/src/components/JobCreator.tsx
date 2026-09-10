@@ -47,10 +47,11 @@ export const JobCreator: React.FC<JobCreatorProps> = ({ onJobCreated }) => {
 
   return (
     <div className="card">
-      <h2>1. 번역 작업 생성 (ko-KR)</h2>
+      <h2>1. 한국어 원문 준비</h2>
+      <p className="card-intro">번역할 locale JSON을 넣고 결과를 받을 언어를 고르세요.</p>
       <form onSubmit={handleSubmit} style={{ marginTop: "1rem" }}>
         <div className="form-group">
-          <label>소스 JSON 데이터 (ko-KR)</label>
+          <label>한국어 원문 (ko-KR JSON)</label>
           <textarea
             value={sourceContent}
             onChange={(e) => setSourceContent(e.target.value)}
@@ -59,7 +60,7 @@ export const JobCreator: React.FC<JobCreatorProps> = ({ onJobCreated }) => {
         </div>
 
         <div className="form-group">
-          <label>타깃 언어 선택</label>
+          <label>생성할 번역</label>
           <div className="checkbox-group">
             <label className="checkbox-label">
               <input
@@ -83,7 +84,7 @@ export const JobCreator: React.FC<JobCreatorProps> = ({ onJobCreated }) => {
         {error && <div style={{ color: "var(--error)", fontSize: "0.85rem", marginBottom: "1rem" }}>{error}</div>}
 
         <button type="submit" className="btn btn-primary" disabled={loading}>
-          {loading ? "에이전트 가동 중..." : "번역 에이전트 루프 실행 ⚡"}
+          {loading ? "번역·검증 시작 중..." : "번역 후보 만들기"}
         </button>
       </form>
     </div>

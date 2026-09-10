@@ -1,7 +1,7 @@
 import datetime
 from sqlalchemy import Column, String, DateTime, Text, Integer, ForeignKey, JSON, Boolean
 from sqlalchemy.orm import relationship
-from .database import Base
+from database import Base
 
 class Job(Base):
     __tablename__ = "jobs"

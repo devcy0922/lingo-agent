@@ -1,6 +1,6 @@
 from sqlalchemy import create_engine
 from sqlalchemy.orm import declarative_base, sessionmaker
-from .config import settings
+from config import settings
 
 # SQLite 연결을 위한 Engine 설정 (SQLite의 경우 다중 스레드 접근 허용을 위해 check_same_thread=False 지정)
 connect_args = {}

@@ -3,8 +3,8 @@ import re
 import logging
 import httpx
 from sqlalchemy.orm import Session
-from .config import settings
-from .models import Job, Translation
+from config import settings
+from models import Job, Translation
 
 logger = logging.getLogger("LingoAgent")
 logging.basicConfig(level=logging.INFO)
@@ -16,6 +16,19 @@ VAR_PATTERN = re.compile(r"\{([a-zA-Z0-9_]+)\}")
 def extract_variables(text: str) -> set:
     """텍스트 내 중괄호 변수를 추출합니다."""
     return set(VAR_PATTERN.findall(text))
+
+
+def _flatten_json(value, prefix=()):
+    if isinstance(value, dict):
+        for key, child in value.items():
+            yield from _flatten_json(child, (*prefix, str(key)))
+    else:
+        yield prefix, value
+
+def _gateway_headers() -> dict:
+    if settings.LLM_API_KEY:
+        return {"Authorization": f"Bearer {settings.LLM_API_KEY}"}
+    return {}
 
 def lint_translation(source_content: str, target_content: str) -> tuple[bool, str]:
     """
@@ -30,9 +43,11 @@ def lint_translation(source_content: str, target_content: str) -> tuple[bool, st
     except json.JSONDecodeError as e:
         return False, f"JSON 파싱 에러: {str(e)}"
 
-    # 1. 키 유실 검사
-    source_keys = set(source_json.keys())
-    target_keys = set(target_json.keys())
+    # 1. 중첩 JSON의 leaf key와 타입 검사
+    source_values = dict(_flatten_json(source_json))
+    target_values = dict(_flatten_json(target_json))
+    source_keys = set(source_values)
+    target_keys = set(target_values)
 
     missing_keys = source_keys - target_keys
     extra_keys = target_keys - source_keys
@@ -43,12 +58,15 @@ def lint_translation(source_content: str, target_content: str) -> tuple[bool, st
         return False, f"소스에 없는 잘못된 키가 포함되었습니다: {list(extra_keys)}"
 
     # 2. ICU 변수 무결성 검사
-    for key, src_val in source_json.items():
+    for key, src_val in source_values.items():
+        key_label = ".".join(key)
+        tgt_val = target_values.get(key)
         if not isinstance(src_val, str):
+            if type(src_val) is not type(tgt_val):
+                return False, f"키 '{key_label}'의 JSON 타입이 변경되었습니다."
             continue
-        tgt_val = target_json.get(key, "")
         if not isinstance(tgt_val, str):
-            return False, f"키 '{key}'의 번역값이 문자열이 아닙니다."
+            return False, f"키 '{key_label}'의 번역값이 문자열이 아닙니다."
 
         src_vars = extract_variables(src_val)
         tgt_vars = extract_variables(tgt_val)
@@ -57,14 +75,14 @@ def lint_translation(source_content: str, target_content: str) -> tuple[bool, st
         extra_vars = tgt_vars - src_vars
 
         if missing_vars:
-            return False, f"키 '{key}' 번역에서 변수가 유실되었습니다: {list(missing_vars)}"
+            return False, f"키 '{key_label}' 번역에서 변수가 유실되었습니다: {list(missing_vars)}"
         if extra_vars:
-            return False, f"키 '{key}' 번역에 임의의 변수가 삽입되었습니다: {list(extra_vars)}"
+            return False, f"키 '{key_label}' 번역에 임의의 변수가 삽입되었습니다: {list(extra_vars)}"
 
     return True, "Passed"
 
 
-async def translate_with_llm(source_content: str, target_lang: str, feedback_history: list = None) -> str:
+async def translate_with_llm(source_content: str, target_lang: str, feedback_history: list = None) -> tuple[str, bool]:
     """
     LiteLLM / vLLM Gateway를 호출해 번역을 수행합니다.
     연결이 불가능할 경우, 시연용 mock 번역 결과물을 안정적으로 반환하여 데모의 견고함을 지킵니다.
@@ -88,6 +106,7 @@ async def translate_with_llm(source_content: str, target_lang: str, feedback_his
         async with httpx.AsyncClient(timeout=15.0) as client:
             response = await client.post(
                 f"{settings.LLM_GATEWAY_URL}/chat/completions",
+                headers=_gateway_headers(),
                 json={
                     "model": settings.LLM_MODEL,
                     "messages": [
@@ -105,41 +124,45 @@ async def translate_with_llm(source_content: str, target_lang: str, feedback_his
                     content = content.split("```json")[1].split("```")[0].strip()
                 elif "```" in content:
                     content = content.split("```")[1].split("```")[0].strip()
-                return content
+                return content, False
             else:
                 logger.warning(f"LLM Gateway returned status {response.status_code}. Using mock fallback.")
     except Exception as e:
         logger.error(f"LLM Gateway connection failed: {e}. Executing fallback translation for demo integrity.")
 
     # Fallback Mock Translation (데모 환경 무중단 보장)
-    return simulate_fallback_translation(source_content, target_lang)
+    return simulate_fallback_translation(source_content, target_lang), True
 
 
 def simulate_fallback_translation(source_content: str, target_lang: str) -> str:
     """데모를 위해 LLM API 통신 불가 시 로컬에서 간단한 번역 룰에 따라 번역 JSON을 흉내냅니다."""
     try:
         data = json.loads(source_content)
-        mock_data = {}
-        for k, v in data.items():
+        def translate_value(v):
+            if isinstance(v, dict):
+                return {k: translate_value(child) for k, child in v.items()}
+            if not isinstance(v, str):
+                return v
             if target_lang.startswith("en"):
                 # en-US Fallback
                 val = f"[EN] {v}"
                 # 중괄호 변수가 번역 결과물에 남도록 단순 매핑
                 val = val.replace("님", "").replace("개", " units")
-                mock_data[k] = val
             elif target_lang.startswith("ja"):
                 # ja-JP Fallback
                 val = f"[JA] {v}"
                 val = val.replace("님", "様").replace("개", "個")
-                mock_data[k] = val
             else:
-                mock_data[k] = f"[{target_lang}] {v}"
+                val = f"[{target_lang}] {v}"
+            return val
+
+        mock_data = translate_value(data)
         return json.dumps(mock_data, ensure_ascii=False, indent=2)
     except:
         return source_content
 
 
-async def evaluate_quality_with_llm(source_content: str, translated_content: str, target_lang: str) -> tuple[int, str]:
+async def evaluate_quality_with_llm(source_content: str, translated_content: str, target_lang: str) -> tuple[int, str, str]:
     """
     LLM-as-a-Judge 품질 평가를 실행합니다.
     0-100 사이의 점수와 정성 피드백 평점을 산출합니다.
@@ -159,6 +182,7 @@ async def evaluate_quality_with_llm(source_content: str, translated_content: str
         async with httpx.AsyncClient(timeout=15.0) as client:
             response = await client.post(
                 f"{settings.LLM_GATEWAY_URL}/chat/completions",
+                headers=_gateway_headers(),
                 json={
                     "model": settings.LLM_MODEL,
                     "messages": [
@@ -173,12 +197,12 @@ async def evaluate_quality_with_llm(source_content: str, translated_content: str
                 result = response.json()
                 content = result["choices"][0]["message"]["content"].strip()
                 eval_data = json.loads(content)
-                return int(eval_data.get("score", 90)), eval_data.get("critique", "N/A")
+                return int(eval_data.get("score", 0)), eval_data.get("critique", "N/A"), "AVAILABLE"
     except Exception as e:
-        logger.error(f"QA Evaluation failed: {e}. Applying default passing score for demo.")
+        logger.error(f"QA Evaluation failed: {e}.")
 
-    # API 오류 시 기본 통과 점수로 처리하여 데모 유지
-    return 92, "Local simulation score applied. Normal translation quality."
+    # QA를 받지 못한 결과는 성공으로 간주하지 않는다.
+    return -1, "QA 서비스를 사용할 수 없어 품질을 판정하지 못했습니다.", "UNAVAILABLE"
 
 
 async def run_lingo_agent_loop(job_id: str, db: Session):
@@ -223,8 +247,9 @@ async def run_lingo_agent_loop(job_id: str, db: Session):
             logger.info(f"Job {job_id} [{lang}] translation attempt {trans.attempts} starting.")
             
             # 1. 번역 요청
-            translated_raw = await translate_with_llm(job.source_content, lang, feedback_list)
+            translated_raw, is_fallback = await translate_with_llm(job.source_content, lang, feedback_list)
             trans.translated_content = translated_raw
+            trans.is_fallback = is_fallback
             db.commit()
 
             # 2. 정적 린터 검증
@@ -240,19 +265,38 @@ async def run_lingo_agent_loop(job_id: str, db: Session):
             trans.lint_status = "PASSED"
             db.commit()
 
+            if is_fallback:
+                trans.qa_status = "UNAVAILABLE"
+                trans.quality_score = -1
+                feedback_list.append(
+                    f"Attempt {trans.attempts}: LLM 연결 실패로 로컬 fallback을 생성했습니다. 승인할 수 없습니다."
+                )
+                trans.feedback_log = feedback_list
+                db.commit()
+                break
+
             # 3. LLM 품질 평가
-            q_score, q_critique = await evaluate_quality_with_llm(job.source_content, translated_raw, lang)
+            q_score, q_critique, qa_availability = await evaluate_quality_with_llm(
+                job.source_content, translated_raw, lang
+            )
             trans.quality_score = q_score
+            trans.qa_status = "UNAVAILABLE" if qa_availability == "UNAVAILABLE" else "PENDING"
             feedback_list.append(f"Attempt {trans.attempts} QA Score: {q_score}. Critique: {q_critique}")
             trans.feedback_log = feedback_list
             db.commit()
 
+            if qa_availability == "UNAVAILABLE":
+                break
+
             # 합격 기준 점수 (85점) 확인
             if q_score >= 85:
+                trans.qa_status = "PASSED"
                 success = True
                 logger.info(f"Job {job_id} [{lang}] successfully passed all checks with score {q_score}.")
                 break
             else:
+                trans.qa_status = "FAILED"
+                db.commit()
                 logger.warning(f"Job {job_id} [{lang}] failed quality score ({q_score} < 85). Retrying.")
 
         if not success:
@@ -260,15 +304,23 @@ async def run_lingo_agent_loop(job_id: str, db: Session):
 
     # 모든 번역 완료 시 잡 상태 변경
     # 모든 번역 중 실패한 항목이 있으면 FAILED, 전부 정상이면 REVIEW_READY
-    failures = db.query(Translation).filter(
-        Translation.job_id == job_id,
-        Translation.lint_status == "FAILED"
-    ).count()
-
-    if failures > 0:
+    translations = db.query(Translation).filter(Translation.job_id == job_id).all()
+    if any(t.is_fallback or t.qa_status == "UNAVAILABLE" for t in translations):
+        job.status = "DEGRADED"
+    elif any(t.lint_status == "FAILED" for t in translations):
         job.status = "FAILED"
-    else:
+    elif any(t.qa_status == "FAILED" for t in translations):
+        job.status = "QA_FAILED"
+    elif all(
+        t.lint_status == "PASSED"
+        and t.qa_status == "PASSED"
+        and t.quality_score >= 85
+        and not t.is_fallback
+        for t in translations
+    ):
         job.status = "REVIEW_READY"
+    else:
+        job.status = "FAILED"
     
     db.commit()
     logger.info(f"Job {job_id} process finished. Status: {job.status}")
