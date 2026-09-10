@@ -1,0 +1,27 @@
+version: "1"
+name: "internal_admin"
+inherit: "global"
+description: "사내 백오피스 및 관리자 콘솔 UI 프로필"
+
+tone:
+  style: "concise_direct"
+  formality: "direct"
+  guidelines:
+    - "관리자 화면 특성에 맞게 군더더기 없는 간결하고 명확한 직관적 레이블을 사용합니다."
+    - "버튼 및 메뉴 텍스트는 명사형 또는 간결한 동작형으로 표기합니다."
+
+terms:
+  - term: "포스트"
+    translations:
+      en-US: "Article Item"
+      ja-JP: "投稿管理"
+
+  - term: "설정"
+    translations:
+      en-US: "Settings"
+      ja-JP: "設定"
+
+  - term: "배포"
+    translations:
+      en-US: "Release"
+      ja-JP: "リリース"

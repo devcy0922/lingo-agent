@@ -1,0 +1,28 @@
+# .lingo.yml - 프로젝트별 Lingo 설정 파일 예시
+version: "1"
+
+# 1. 적용할 상위 프로필 선택 (tech_blog | internal_admin | global)
+profile: "tech_blog"
+
+# 2. 번역 대상 기본 언어
+target_langs:
+  - "en-US"
+  - "ja-JP"
+
+# 3. 프로젝트별 맞춤 톤앤매너 (필요시 오버라이드)
+tone:
+  guidelines:
+    - "VitePress 블로그 특성에 맞춰 기술적 맥락을 명확히 설명합니다."
+
+# 4. 프로젝트 고유 용어 (프로필 상속 후 최종 덮어쓰기)
+terms:
+  - term: "Thinker"
+    translations:
+      en-US: "Thinker"
+      ja-JP: "Thinker"
+    note: "내부 AI 모델명"
+
+# 5. 번역 메모리(TM) 캐시 경로
+tm:
+  enabled: true
+  path: ".lingo/tm.json"

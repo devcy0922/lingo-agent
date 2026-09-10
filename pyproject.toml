@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "lingo-agent"
+version = "1.1.0"
+description = "Unified i18n & Markdown Translation Agent, CLI, and Review Gate"
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [
+    { name = "GoVail Platform Team" }
+]
+dependencies = [
+    "httpx>=0.25.0",
+    "pyyaml>=6.0",
+]
+
+[project.scripts]
+lingo = "lingo.cli:main"
+
+[tool.setuptools]
+py-modules = ["translate", "translate_markdown"]
+
+[tool.setuptools.packages.find]
+include = ["lingo*"]

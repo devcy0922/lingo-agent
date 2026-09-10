@@ -34,27 +34,46 @@ lingo-report.json                    QA 증거 artifact
 
 번역과 QA 모델은 1차 테스트에서 모두 `govail/thinker`를 사용한다.
 
-## 로컬 실행
+## 통합 CLI (`lingo`)
+
+Lingo는 다른 프로젝트에서 한 줄로 호출할 수 있는 통합 CLI 도구를 제공한다.
+
+### 설치
 
 ```bash
-pip install -r requirements-translate.txt
-
-export LLM_GATEWAY_URL="https://your-gateway.example.com/v1"
-export LLM_API_KEY="your-api-key"
-export LLM_TRANSLATION_MODEL="govail/thinker"
-export LLM_REVIEW_MODEL="govail/thinker"
-export LLM_TIMEOUT_SECONDS="240"
-
-python translate.py \
-  --source path/to/locales/ko.json \
-  --base-source path/to/locales/ko.previous.json \
-  --langs en-US ja-JP \
-  --output path/to/locales/ \
-  --glossary path/to/glossary.json \
-  --report lingo-report.json
+# 로컬 개발 환경 또는 CI 설치
+pip install -e /srv/internal/lingo-agent
+# 또는 pip install -e .
 ```
 
-기본 실행은 추가·변경·누락 키만 번역하고 기존 번역을 보존한다. 전체 재번역은 명시적인 `--sync-all`에서만 수행한다.
+### 사용법
+
+```bash
+# 1. Markdown 문서 번역 (기술 블로그 프로필 적용)
+lingo docs/posts/new-post.md -l en,ja -p tech_blog
+
+# 2. i18n JSON 증분 번역 (Git HEAD 대비 변경된 키만 번역)
+lingo locales/ko.json --diff -p internal_admin
+
+# 3. CI 검증 전용 (파일 변경 없이 Fail-Closed 린트 & QA 확인)
+lingo check locales/ko.json -l en-US ja-JP
+```
+
+## 네임스페이스 기반 용어집 & 번역 메모리 (TM)
+
+프로젝트 특성(기술 블로그 vs 내부 관리자 콘솔 vs B2C)에 따라 톤앤매너와 번역 용어가 충돌하는 문제를 방지하기 위해 **선언적 계층형 프로필**을 제공한다.
+
+```text
+Level 1: Global (profiles/global.yml) - 전사 공통 브랜드 및 고유명사
+   └── Level 2: Profile (profiles/tech_blog.yml, internal_admin.yml) - 톤앤매너 및 도메인 용어
+          └── Level 3: Project Local (.lingo.yml) - 개별 저장소 전용 규칙
+```
+
+- **하드코딩 방지**: 모든 용어와 스타일 지침은 YAML 파일로 선언적 관리.
+- **번역 메모리(TM) 격리**: 동일한 한국어 문장이라도 프로필(네임스페이스)별로 분리 저장되어 컨텍스트 오염을 방지.
+
+## 레거시 CLI (`translate.py`) 호환 실행
+
 
 ## 종료 코드
 
