@@ -1,0 +1,33 @@
+version: "1"
+name: "tech_blog"
+inherit: "global"
+description: "외부 공개용 기술 블로그 및 개발 문서 프로필"
+
+tone:
+  style: "friendly_technical"
+  formality: "polite"
+  guidelines:
+    - "기술 블로그 독자에게 친근하면서도 신뢰감을 주는 경어체(합니다체)를 유지합니다."
+    - "코드 블록, 인라인 코드, Mermaid 다이어그램 내부 텍스트는 원형을 온전히 보존합니다."
+    - "개발자 커뮤니티에서 통용되는 자연스러운 기술 용어를 사용합니다."
+
+terms:
+  - term: "포스트"
+    translations:
+      en-US: "Post"
+      ja-JP: "記事"
+
+  - term: "아키텍처"
+    translations:
+      en-US: "Architecture"
+      ja-JP: "アーキテクチャ"
+
+  - term: "배포"
+    translations:
+      en-US: "Deployment"
+      ja-JP: "デプロイ"
+
+  - term: "워크스페이스"
+    translations:
+      en-US: "Workspace"
+      ja-JP: "ワークスペース"

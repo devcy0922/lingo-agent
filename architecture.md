@@ -36,9 +36,9 @@ flowchart TB
     Agent --> Files
 ```
 
-`translate.py`와 `translate_markdown.py`는 소비 저장소의 GitHub Actions에서 검증된 LingoAgent commit SHA로 checkout되어 실행된다. 이 경로가 자동 커밋의 유일한 승인 게이트다.
+`lingo` 통합 CLI(및 호환 스크립트 `translate.py`, `translate_markdown.py`)는 소비 저장소의 개발자 로컬 환경 및 GitHub Actions에서 직접 호출된다. 계층형 프로필(`profiles/`)을 통해 프로젝트 성격(기술 블로그 vs 내부 관리자 콘솔 등)에 맞춘 톤앤매너와 용어집을 선언적으로 적용하며, 번역 메모리(TM)를 네임스페이스별로 격리한다.
 
-`backend/`는 작업 생성, 상태 polling, diff 확인, 수동 승인 UI를 보여주기 위한 데모다. 현재 구현은 CI 경로와 별개이며, 장애 시 fallback과 기본 QA 점수를 사용하므로 production 배포 게이트로 간주하면 안 된다.
+`backend/` 및 `frontend/`는 중앙 번역 허브로서 작업 생성, 상태 모니터링, 직관적 Diff 비교 및 인간 승인(Human-in-the-loop)을 제공하는 웹 콘솔이다.
 
 ## 2. CI 번역 처리 흐름
 
