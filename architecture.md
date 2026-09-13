@@ -186,7 +186,37 @@ LLM_TIMEOUT_SECONDS=240
 
 모델은 번역 결과의 권위자가 아니다. 모델 출력은 구조·용어·품질 검증을 통과해야만 배포 후보가 된다.
 
-## 8. 향후 hardening 범위
+## 8. OpenAPI 어댑터와 소비 저장소 통합 (`rev-openapi`)
+
+`lingo` CLI는 OpenAPI 3.x 스펙(`openapi.json`)도 `.json` 확장자로 들어오지만, 일반 i18n locale JSON과 달리 `type`, `format`, `$ref`, enum 값, 파라미터/스키마 이름 같은 구조적 문자열이 섞여 있다. 이를 그대로 `JsonAdapter`(leaf 전체 번역)에 넣으면 스펙이 깨진다. 그래서 `OpenApiAdapter`가 별도로 존재하며, `description`/`summary`/`title` 키의 문자열만 번역 대상으로 선별한다.
+
+```mermaid
+flowchart LR
+    subgraph rev-openapi["rev-openapi (다른 저장소, add-on CLI — 별도 소유)"]
+        AST["PHP AST 분석"] --> Spec["openapi.json (KR, 결정적 생성)"]
+    end
+    subgraph LingoAgent["LingoAgent — 번역 LLM 도구 SSOT"]
+        Detect["cli.py: is_openapi_document() 로 JSON 형식 자동 분기"]
+        Extract["OpenApiAdapter: description/summary/title만 경로 tuple로 평탄화\n(dict+list 재귀, type/$ref/enum/파라미터명은 제외)"]
+        Flat["평탄화 결과를 nested dict-of-string으로 변환\n(translate.py의 _leaf_map/_nested_from_leaves 재사용)"]
+        Pipeline["translate.run_pipeline() — 기존 JsonAdapter와 동일한\ngovail/thinker 호출, glossary, ICU, QA, fail-closed"]
+        Merge["번역 leaf만 원본 구조에 역병합 (deepcopy + 경로 splice)"]
+        Out["openapi.en.json (전체 스펙, 구조 100% 보존)\nopenapi.en.i18n.json (평탄 캐시 — 다음 --diff 기준)"]
+    end
+    Spec -->|"subprocess: lingo openapi.json -l en-US --diff -p <profile>"| Detect
+    Detect --> Extract --> Flat --> Pipeline --> Merge --> Out
+```
+
+계약:
+
+1. `rev-openapi`는 이 레포와 무관한 별도 저장소이며, `openapi.json` 생성(P1, AST/diff-patch)만 책임진다. 번역 LLM 도구는 만들지 않고 `lingo`를 서브프로세스로 호출한다.
+2. LLM 백엔드는 계속 `govail/thinker`다(§7 모델 설정 변경 없음). `OpenApiAdapter`는 새 LLM 클라이언트를 만들지 않고 `translate.run_pipeline`에 위임한다.
+3. `description`/`summary`/`title` 키 이름 기준으로만 번역 대상을 선별한다. 이 필터를 벗어난 값(`type`, `format`, `$ref`, `enum`, `operationId`, 파라미터/프로퍼티 이름 등)은 항상 원문 그대로 보존된다.
+4. 리스트(parameters, tags, examples 등)도 경로에 인덱스를 포함해 순회한다 — `translate.py`의 `_leaf_map`은 dict만 순회하므로, 어댑터가 리스트를 문자열 인덱스로 평탄화한 뒤에만 기존 파이프라인에 넘긴다.
+5. 평탄화된 결과(캐시 파일 `*.{lang}.i18n.json`)가 다음 `--diff` 실행의 기준(existing/base)이 되어, 변경되지 않은 설명은 재번역하지 않는다 — `rev-openapi`의 "변경분만 patch" 철학과 동일한 증분 원칙을 번역 계층에도 유지한다.
+6. `rev-openapi` 쪽 실제 훅 연결(`sync` 이후 `lingo` 서브프로세스 호출)은 `rev-openapi`가 P1(CLI) 구현을 마친 뒤 그 저장소에서 진행한다 — 이 레포는 호출 가능한 CLI 계약만 제공한다.
+
+## 9. 향후 hardening 범위
 
 다음 항목은 현재 구현되었다고 주장하지 않는다.
 

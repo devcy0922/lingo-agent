@@ -8,6 +8,7 @@ from typing import List, Optional
 
 from lingo.adapters.json_adapter import JsonAdapter
 from lingo.adapters.markdown_adapter import MarkdownAdapter
+from lingo.adapters.openapi_adapter import OpenApiAdapter, is_openapi_document
 from lingo.config import load_config
 
 logging.basicConfig(
@@ -151,7 +152,10 @@ def main(argv: Optional[List[str]] = None) -> int:
             report_path=report_path,
         )
     elif suffix in [".json"]:
-        adapter = JsonAdapter(config)
+        if is_openapi_document(target_path):
+            adapter = OpenApiAdapter(config)
+        else:
+            adapter = JsonAdapter(config)
         return adapter.translate(
             source_path=target_path,
             target_langs=resolved_langs,
