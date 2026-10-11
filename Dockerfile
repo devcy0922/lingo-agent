@@ -11,6 +11,9 @@ RUN corepack enable && corepack prepare pnpm@10.34.5 --activate \
 FROM python:3.12-slim AS runtime
 WORKDIR /app
 
+ARG LINGO_VERSION=1.2.0
+ARG LINGO_GIT_SHA=unknown
+
 COPY backend/requirements.txt ./backend/requirements.txt
 RUN pip install --no-cache-dir -r backend/requirements.txt
 
@@ -18,6 +21,7 @@ COPY backend ./backend
 COPY --from=frontend-build /app/frontend/dist ./frontend/dist
 
 ENV HOST=0.0.0.0
+ENV LINGO_VERSION=${LINGO_VERSION} LINGO_GIT_SHA=${LINGO_GIT_SHA}
 EXPOSE 47081
 
 WORKDIR /app/backend

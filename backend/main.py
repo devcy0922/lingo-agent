@@ -20,7 +20,7 @@ Base.metadata.create_all(bind=engine)
 app = FastAPI(
     title="LingoAgent API",
     description="Agentic i18n Translation & Validation Pipeline Gateway",
-    version="1.0.0"
+    version=settings.LINGO_VERSION,
 )
 
 # CORS 설정 (프론트엔드 Vite 개발 서버 포트 등 허용)
@@ -38,7 +38,12 @@ app.add_middleware(
 
 @app.get("/healthz")
 def healthz():
-    return {"status": "ok"}
+    return {
+        "status": "ok",
+        "service": "lingo-agent",
+        "version": settings.LINGO_VERSION,
+        "git_sha": settings.LINGO_GIT_SHA,
+    }
 
 
 @app.post("/api/jobs", response_model=JobResponse)

@@ -11,12 +11,22 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "backend"))
 from database import Base  # noqa: E402
 from models import Job, Translation  # noqa: E402
 import agent  # noqa: E402
+from main import healthz  # noqa: E402
 
 
 def make_session():
     engine = create_engine("sqlite:///:memory:")
     Base.metadata.create_all(bind=engine)
     return sessionmaker(bind=engine)()
+
+
+def test_health_readback_includes_service_identity():
+    response = healthz()
+
+    assert response["status"] == "ok"
+    assert response["service"] == "lingo-agent"
+    assert response["version"]
+    assert response["git_sha"]
 
 
 def test_nested_json_fallback_preserves_shape_and_variables():
