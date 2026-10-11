@@ -3,6 +3,9 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      args:
+        LINGO_VERSION: ${LINGO_VERSION:-1.2.0}
+        LINGO_GIT_SHA: ${LINGO_GIT_SHA:-unknown}
     container_name: lingo-agent
     restart: unless-stopped
     env_file: .env

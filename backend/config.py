@@ -4,6 +4,8 @@ from pydantic_settings import BaseSettings
 class Settings(BaseSettings):
     PORT: int = 47081
     HOST: str = "0.0.0.0"
+    LINGO_VERSION: str = "1.2.0"
+    LINGO_GIT_SHA: str = "unknown"
     
     # SQLite 기본 DB 경로 설정
     DATABASE_URL: str = "sqlite:///../data/db.sqlite3"
