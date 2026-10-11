@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.3.1] - 2026-10-12
+
+- LangGraph StateGraph와 `LangGraphRuntimeProvider`의 실제 구현을 독립 저장소 [`langgraph-process`](https://github.com/devcy0922/langgraph-process) `v0.1.0`으로 분리했다.
+- `lingo.runtimes.langgraph*`는 기존 호출자를 위한 호환 facade만 유지하며, `lingo-agent`가 LangGraph 구현의 소유자가 되지 않도록 했다.
+- LangGraph는 선택적 extra로만 설치되고 engine-process-only 환경의 기본 의존성에는 포함되지 않는다.
+
 ## [1.3.0] - 2026-10-12
 
 - `RuntimeRegistry → Provider → Runtime` 경계를 engine-process와 LangGraph에 공통 적용했다.

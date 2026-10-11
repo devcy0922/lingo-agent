@@ -230,7 +230,7 @@ flowchart LR
 
 ## 10. 다국어 런타임 추상화 및 벤치마킹 아키텍처
 
-Lingo는 특정 워크플로 프레임워크나 내부 런타임에 강결합되지 않도록 **공급자 추상화 계층(Runtime Provider Pattern)**과 **표준 도구 계층(MCP)**으로 분리되어 있다. 핵심 경계는 `RuntimeRegistry → Provider → Runtime`이며, LangGraph·engine-process·그 밖의 런타임은 선택 가능한 Provider 구현이다. 따라서 engine-process만 가능한 환경에서도 다른 런타임의 설치를 요구하지 않는다.
+Lingo는 특정 워크플로 프레임워크나 내부 런타임에 강결합되지 않도록 **공급자 추상화 계층(Runtime Provider Pattern)**과 **표준 도구 계층(MCP)**으로 분리되어 있다. 핵심 경계는 `RuntimeRegistry → Provider → Runtime`이며, LangGraph·engine-process·그 밖의 런타임은 선택 가능한 Provider 구현이다. LangGraph StateGraph와 LangGraph Provider의 실제 구현은 독립 저장소 [`langgraph-process`](https://github.com/devcy0922/langgraph-process)가 소유하고, 이 저장소에는 호환 facade만 둔다. 따라서 engine-process만 가능한 환경에서도 다른 런타임의 설치를 요구하지 않는다.
 
 ```mermaid
 flowchart TD
@@ -258,7 +258,7 @@ flowchart TD
     CLI --> DomainAdapter --> Registry --> Provider --> RuntimeLayer
 ```
 
-### A. LangGraph 상태 머신 (Cyclic StateGraph)
+### A. LangGraph 상태 머신 (Cyclic StateGraph, `langgraph-process` 소유)
 - **노드**: `prepare` → `draft_translate` → `lint` → `qa_judge` → `assemble`
 - **조건부 피드백 엣지 (`should_retry_or_assemble`)**:
   - 린트 또는 QA 점수 미달 아이템이 존재할 경우, 피드백(`critique`, `lint_errors`)을 프롬프트에 주입하여 `draft_translate`로 루프백.
@@ -285,6 +285,6 @@ Consumer → RuntimeRegistry.get_provider(name)
          → 선택된 Runtime
 ```
 
-`EngineProcessRuntimeProvider`가 선택된 구성에서만 해당 Provider가 engine-process `/v1/process/jobs` 호출을 소유한다. 따라서 소비자와 engine-process 사이에는 Provider 경계가 있지만, Provider 자체가 upstream engine-process로 직접 HTTP 요청하는 것은 의도된 어댑터 동작이다. Registry는 concrete Provider를 지연 import하므로 engine-process-only 환경이 LangGraph import에 실패하지 않는다.
+`EngineProcessRuntimeProvider`가 선택된 구성에서만 해당 Provider가 engine-process `/v1/process/jobs` 호출을 소유한다. 따라서 소비자와 engine-process 사이에는 Provider 경계가 있지만, Provider 자체가 upstream engine-process로 직접 HTTP 요청하는 것은 의도된 어댑터 동작이다. Registry는 concrete Provider를 지연 import하므로 engine-process-only 환경이 LangGraph import에 실패하지 않는다. LangGraph가 선택되면 `langgraph-process`의 Provider facade를 통해 외부 구현을 사용한다.
 
 현재 `lingo` CLI의 JSON/Markdown 경로는 이 계약을 아직 사용하지 않는다. `cli.py`의 `--runtime`은 환경변수만 설정하고, `JsonAdapter`·`MarkdownAdapter`·`OpenApiAdapter`는 레거시 `translate.run_pipeline()`을 호출한다. Provider 직접 테스트가 통과했다는 사실을 CLI Provider 통합 또는 실제 engine-process 호출 증거로 확대 해석하지 않는다.

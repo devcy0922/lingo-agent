@@ -1,8 +1,11 @@
-from __future__ import annotations
+"""독립 langgraph-process 패키지의 호환 facade."""
 
-from lingo.runtimes.langgraph.graph import build_translation_graph
-from lingo.runtimes.langgraph.nodes import TranslationNodeContext
-from lingo.runtimes.langgraph.state import LangGraphState, TranslationItem
+from langgraph_process import (
+    LangGraphState,
+    TranslationItem,
+    TranslationNodeContext,
+    build_translation_graph,
+)
 
 __all__ = [
     "build_translation_graph",
