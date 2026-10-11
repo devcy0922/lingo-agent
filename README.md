@@ -71,7 +71,7 @@ Level 1: Global (profiles/global.yml) - 전사 공통 브랜드 및 고유명사
 
 ## 런타임 추상화 및 다국어 오케스트레이션
 
-Lingo는 서비스 계층과 분리된 **런타임 공급자 패턴(Runtime Provider Pattern)**을 제공합니다. 소비자는 `RuntimeRegistry → Provider → Runtime` 경계만 사용하고, LangGraph·engine-process·다른 HTTP/CLI 런타임은 환경별 Provider 구현으로 선택합니다.
+Lingo는 서비스 계층과 분리된 **런타임 공급자 패턴(Runtime Provider Pattern)**을 제공합니다. 소비자는 `RuntimeRegistry → Provider → Runtime` 경계만 사용하고, LangGraph·engine-process·다른 HTTP/CLI 런타임은 환경별 Provider 구현으로 선택합니다. LangGraph Provider의 실제 구현은 독립 저장소 [`langgraph-process`](https://github.com/devcy0922/langgraph-process)가 소유하며, 이 저장소의 `lingo.runtimes.langgraph*` 경로는 호환 facade입니다.
 
 ### 1. 런타임 Provider API
 ```bash
@@ -88,7 +88,7 @@ PY
 export LINGO_RUNTIME_PROVIDER=engine-process
 ```
 
-Provider 호출 경계는 `소비자 → RuntimeRegistry → 선택된 Provider → 런타임`이다. engine-process용 HTTP/CLI 호출은 `EngineProcessRuntimeProvider`가 담당하며, 소비자 코드가 `/v1/process/*`를 직접 호출하지 않는다. 특정 환경에서 engine-process만 사용할 수 있도록 Provider 구현은 지연 import되고 LangGraph는 선택적 extra다.
+Provider 호출 경계는 `소비자 → RuntimeRegistry → 선택된 Provider → 런타임`이다. engine-process용 HTTP/CLI 호출은 `EngineProcessRuntimeProvider`가 담당하며, 소비자 코드가 `/v1/process/*`를 직접 호출하지 않는다. 특정 환경에서 engine-process만 사용할 수 있도록 Provider 구현은 지연 import되고 LangGraph Provider는 `langgraph` optional extra로만 설치된다. 따라서 engine-process-only 환경은 `langgraph-process`를 설치하지 않아도 된다.
 
 현재 `lingo` CLI의 JSON/Markdown 번역 경로는 기존 `translate.run_pipeline()`을 사용하며, `--runtime`은 Provider 실행을 보장하지 않는다. CLI까지 Provider로 전환하려면 별도 어댑터 통합과 E2E 검증이 필요하다.
 
