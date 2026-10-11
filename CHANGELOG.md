@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.3.0] - 2026-10-12
+
+- `RuntimeRegistry → Provider → Runtime` 경계를 engine-process와 LangGraph에 공통 적용했다.
+- concrete Provider를 지연 import하고 LangGraph를 선택적 extra로 분리해 engine-process-only 환경에서도 Registry를 사용할 수 있게 했다.
+- 기본 벤치마크가 설치되지 않은 런타임을 전제하지 않도록 현재 환경의 Provider를 기준으로 동작하게 했다.
+- `runtime-provider-pattern` 스킬의 환경 중립적 계약과 deprecated `lingo-runtime` 호환 alias를 반영했다.
+
 ## [1.2.0] - 2026-10-12
 
 ### Added

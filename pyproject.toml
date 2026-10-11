@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "lingo-agent"
-version = "1.2.0"
+version = "1.3.0"
 description = "Unified i18n & Markdown Translation Agent, CLI, and Review Gate"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -14,9 +14,10 @@ authors = [
 dependencies = [
     "httpx>=0.25.0",
     "pyyaml>=6.0",
-    "langgraph>=0.2.0",
-    "langchain-core>=0.3.0",
 ]
+
+[project.optional-dependencies]
+langgraph = ["langgraph>=0.2.0"]
 
 [project.scripts]
 lingo = "lingo.cli:main"

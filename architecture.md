@@ -230,21 +230,22 @@ flowchart LR
 
 ## 10. 다국어 런타임 추상화 및 벤치마킹 아키텍처
 
-Lingo는 특정 워크플로 프레임워크나 내부 런타임에 강결합되지 않도록 **공급자 추상화 계층(Runtime Provider Pattern)**과 **표준 도구 계층(MCP)**으로 분리되어 있다. 이를 통해 업계 표준 OSS(LangGraph)와 사내 엔진(engine-process) 간의 실행 속도, 안정성, 복구력, 품질을 1:1로 비교 분석(Benchmarking)할 수 있다.
+Lingo는 특정 워크플로 프레임워크나 내부 런타임에 강결합되지 않도록 **공급자 추상화 계층(Runtime Provider Pattern)**과 **표준 도구 계층(MCP)**으로 분리되어 있다. 핵심 경계는 `RuntimeRegistry → Provider → Runtime`이며, LangGraph·engine-process·그 밖의 런타임은 선택 가능한 Provider 구현이다. 따라서 engine-process만 가능한 환경에서도 다른 런타임의 설치를 요구하지 않는다.
 
 ```mermaid
 flowchart TD
     subgraph Consumers["소비 계층 (Decoupled Clients)"]
-        CLI["lingo CLI (--runtime)"]
-        NewsroomPub["Newsroom 기사 발행 이벤트 (NewsroomArticleAdapter)"]
-        APIServer["Lingo Hub API"]
+        CLI["CLI / Worker / API"]
+        DomainAdapter["도메인 어댑터"]
     end
 
     subgraph ProviderLayer["런타임 공급자 계층 (BaseRuntimeProvider)"]
         Registry["RuntimeRegistry (스위칭 & 벤치마킹)"]
-        LG["LangGraphRuntimeProvider (StateGraph / Loop / Checkpointer)"]
-        EP["EngineProcessRuntimeProvider (cy-process / 격리 러너)"]
-        Mock["MockRuntimeProvider (초고속 단위 테스트)"]
+        Provider["선택된 Provider 구현"]
+    end
+
+    subgraph RuntimeLayer["선택된 런타임 (환경별 교체 가능)"]
+        Runtime["local / remote / process / graph / vendor runtime"]
     end
 
     subgraph ToolingLayer["도구 및 평가 계층 (MCP Tools)"]
@@ -254,12 +255,7 @@ flowchart TD
         MCP_Article["mcp_article_blocks_transform (기사 1열 구조 보존)"]
     end
 
-    Consumers --> Registry
-    Registry --> LG
-    Registry --> EP
-    Registry --> Mock
-    LG --> ToolingLayer
-    EP --> ToolingLayer
+    CLI --> DomainAdapter --> Registry --> Provider --> RuntimeLayer
 ```
 
 ### A. LangGraph 상태 머신 (Cyclic StateGraph)
@@ -272,9 +268,23 @@ flowchart TD
 ### B. 런타임 관측성 및 벤치마킹 (`RuntimeRegistry.benchmark_runtimes`)
 - **이벤트 방출 (`RuntimeEvent`)**: `init`, `dispatch`, `draft_translate`, `lint`, `qa_judge`, `assemble`, `completed`, `error` 등 노드 단위 실시간 스트리밍.
 - **메트릭 (`RuntimeMetrics`)**: 전체 소요 시간(`total_duration_ms`), 단계별 지연(`stage_durations_ms`), 재시도 횟수, QA 평균 점수 기록.
-- **벤치마크**: 동일한 `TranslationTask`에 대해 `providers=['langgraph', 'engine-process']`를 나란히 실행하고 성능/비용/품질 비교 리포트 생성.
+- **벤치마크**: 동일한 `TranslationTask`에 대해 현재 환경에 등록된 Provider 목록을 명시해 성능/비용/품질 비교 리포트 생성. `langgraph`와 `engine-process` 동시 실행은 두 Provider가 실제 설치·등록된 환경에서만 수행.
 
 ### C. Newsroom 기사 블록 보존 (`NewsroomArticleAdapter`)
 - 뉴스룸의 에디토리얼 1열 본문(`headline`, `dek`, `body: ArticleBlock[]`, `keynumbers`) 구조를 손상 없이 분해·재조립.
 - 번역 완료 시 `lang`, `parent_article_id`, `tags: ['lang:en']` 속성을 부여하여 즉시 발행 가능한 다국어 기사 객체로 포맷팅.
 
+## 11. Provider 호출 경계와 현재 미연결 지점
+
+Provider API의 실제 계약은 다음과 같다.
+
+```text
+Consumer → RuntimeRegistry.get_provider(name)
+         → BaseRuntimeProvider.execute(task)
+         → 선택된 Runtime Provider
+         → 선택된 Runtime
+```
+
+`EngineProcessRuntimeProvider`가 선택된 구성에서만 해당 Provider가 engine-process `/v1/process/jobs` 호출을 소유한다. 따라서 소비자와 engine-process 사이에는 Provider 경계가 있지만, Provider 자체가 upstream engine-process로 직접 HTTP 요청하는 것은 의도된 어댑터 동작이다. Registry는 concrete Provider를 지연 import하므로 engine-process-only 환경이 LangGraph import에 실패하지 않는다.
+
+현재 `lingo` CLI의 JSON/Markdown 경로는 이 계약을 아직 사용하지 않는다. `cli.py`의 `--runtime`은 환경변수만 설정하고, `JsonAdapter`·`MarkdownAdapter`·`OpenApiAdapter`는 레거시 `translate.run_pipeline()`을 호출한다. Provider 직접 테스트가 통과했다는 사실을 CLI Provider 통합 또는 실제 engine-process 호출 증거로 확대 해석하지 않는다.
