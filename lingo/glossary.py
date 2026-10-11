@@ -143,6 +143,7 @@ class NamespacedGlossaryManager:
         except Exception:
             pass
 
+
     def save_tm(self, tm_file: Path) -> None:
         """현재 캐시된 TM 엔트리를 파일로 직렬화합니다."""
         os.makedirs(tm_file.parent, exist_ok=True)
@@ -166,3 +167,10 @@ class NamespacedGlossaryManager:
         """성공적으로 검증 및 승인된 번역문을 네임스페이스와 함께 저장합니다."""
         if source.strip() and translated.strip():
             self._tm_cache[(namespace, source.strip(), target_lang)] = translated.strip()
+
+
+def load_profile(name_or_path: str = "global") -> ProfileConfig:
+    """기본 NamespacedGlossaryManager를 통해 프로필 설정을 로드하고 반환합니다."""
+    manager = NamespacedGlossaryManager()
+    return manager.resolve_profile(name_or_path)
+

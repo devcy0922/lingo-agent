@@ -218,12 +218,63 @@ flowchart LR
 
 ## 9. 향후 hardening 범위
 
-다음 항목은 현재 구현되었다고 주장하지 않는다.
+다음 항목은 점진적으로 고도화 중이다:
 
-- durable worker와 재시작 복구
+- durable worker와 재시작 복구 (LangGraph Checkpointer 기반 부분 완료)
 - idempotency key 및 중복 실행 방지
 - atomic artifact publish
 - 인증·인가 및 승인자 권한 모델
 - target language allowlist와 path safety
 - schema migration
-- 구조화된 metrics, tracing, alerting
+- 구조화된 metrics, tracing, alerting (RuntimeMetrics 및 RuntimeEvent 도입)
+
+## 10. 다국어 런타임 추상화 및 벤치마킹 아키텍처
+
+Lingo는 특정 워크플로 프레임워크나 내부 런타임에 강결합되지 않도록 **공급자 추상화 계층(Runtime Provider Pattern)**과 **표준 도구 계층(MCP)**으로 분리되어 있다. 이를 통해 업계 표준 OSS(LangGraph)와 사내 엔진(engine-process) 간의 실행 속도, 안정성, 복구력, 품질을 1:1로 비교 분석(Benchmarking)할 수 있다.
+
+```mermaid
+flowchart TD
+    subgraph Consumers["소비 계층 (Decoupled Clients)"]
+        CLI["lingo CLI (--runtime)"]
+        NewsroomPub["Newsroom 기사 발행 이벤트 (NewsroomArticleAdapter)"]
+        APIServer["Lingo Hub API"]
+    end
+
+    subgraph ProviderLayer["런타임 공급자 계층 (BaseRuntimeProvider)"]
+        Registry["RuntimeRegistry (스위칭 & 벤치마킹)"]
+        LG["LangGraphRuntimeProvider (StateGraph / Loop / Checkpointer)"]
+        EP["EngineProcessRuntimeProvider (cy-process / 격리 러너)"]
+        Mock["MockRuntimeProvider (초고속 단위 테스트)"]
+    end
+
+    subgraph ToolingLayer["도구 및 평가 계층 (MCP Tools)"]
+        MCP_Glossary["mcp_glossary_lookup (프로필별 용어/금지어)"]
+        MCP_Lint["mcp_lint_translation (ICU/HTML/태그 무결성)"]
+        MCP_Judge["mcp_qa_judge (LLM 품질 심사)"]
+        MCP_Article["mcp_article_blocks_transform (기사 1열 구조 보존)"]
+    end
+
+    Consumers --> Registry
+    Registry --> LG
+    Registry --> EP
+    Registry --> Mock
+    LG --> ToolingLayer
+    EP --> ToolingLayer
+```
+
+### A. LangGraph 상태 머신 (Cyclic StateGraph)
+- **노드**: `prepare` → `draft_translate` → `lint` → `qa_judge` → `assemble`
+- **조건부 피드백 엣지 (`should_retry_or_assemble`)**:
+  - 린트 또는 QA 점수 미달 아이템이 존재할 경우, 피드백(`critique`, `lint_errors`)을 프롬프트에 주입하여 `draft_translate`로 루프백.
+  - 최대 재시도 한도(`max_retries`) 도달 시 또는 전원 합격 시 `assemble`로 전이.
+- **체크포인팅**: `MemorySaver`를 통해 임의의 `thread_id`(`task_id`)별 실행 상태 스냅샷 저장 및 재개 지원.
+
+### B. 런타임 관측성 및 벤치마킹 (`RuntimeRegistry.benchmark_runtimes`)
+- **이벤트 방출 (`RuntimeEvent`)**: `init`, `dispatch`, `draft_translate`, `lint`, `qa_judge`, `assemble`, `completed`, `error` 등 노드 단위 실시간 스트리밍.
+- **메트릭 (`RuntimeMetrics`)**: 전체 소요 시간(`total_duration_ms`), 단계별 지연(`stage_durations_ms`), 재시도 횟수, QA 평균 점수 기록.
+- **벤치마크**: 동일한 `TranslationTask`에 대해 `providers=['langgraph', 'engine-process']`를 나란히 실행하고 성능/비용/품질 비교 리포트 생성.
+
+### C. Newsroom 기사 블록 보존 (`NewsroomArticleAdapter`)
+- 뉴스룸의 에디토리얼 1열 본문(`headline`, `dek`, `body: ArticleBlock[]`, `keynumbers`) 구조를 손상 없이 분해·재조립.
+- 번역 완료 시 `lang`, `parent_article_id`, `tags: ['lang:en']` 속성을 부여하여 즉시 발행 가능한 다국어 기사 객체로 포맷팅.
+

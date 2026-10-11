@@ -45,6 +45,7 @@ def build_parser() -> argparse.ArgumentParser:
     trans_p.add_argument("--sync-all", action="store_true", help="전체 재번역 강제")
     trans_p.add_argument("--dry-run", action="store_true", help="드라이런")
     trans_p.add_argument("--report", type=Path, default=Path("lingo-report.json"), help="QA 보고서 경로")
+    trans_p.add_argument("--runtime", type=str, default="langgraph", choices=["langgraph", "engine-process", "mock"], help="번역 오케스트레이션 런타임 엔진 선택")
 
     # 2. check 서브커맨드 (CI 검증 전용)
     check_p = subparsers.add_parser("check", help="CI 검증 전용 (린트 및 QA 통과 확인)")
@@ -111,6 +112,10 @@ def main(argv: Optional[List[str]] = None) -> int:
     dry_run = bool(getattr(args, "dry_run", False))
     report_path = getattr(args, "report", Path("lingo-report.json"))
     config_path = getattr(args, "config", None)
+    runtime_choice = getattr(args, "runtime", None)
+    if runtime_choice:
+        import os
+        os.environ["LINGO_RUNTIME_PROVIDER"] = runtime_choice
 
     # check 명령인 경우 dry-run 강제
     if args.command == "check":

@@ -69,6 +69,32 @@ Level 1: Global (profiles/global.yml) - 전사 공통 브랜드 및 고유명사
           └── Level 3: Project Local (.lingo.yml) - 개별 저장소 전용 규칙
 ```
 
+## 런타임 추상화 및 다국어 오케스트레이션
+
+Lingo는 서비스 계층과 분리된 **런타임 공급자 패턴(Runtime Provider Pattern)**을 제공하여, 업계 표준 OSS(`LangGraph`)와 사내 엔진(`engine-process`)을 자유롭게 전환하고 비교 분석할 수 있습니다.
+
+### 1. 런타임 선택 및 스위칭
+```bash
+# LangGraph StateGraph 기반 순환 피드백 파이프라인 (기본값)
+lingo locales/ko.json --runtime langgraph
+
+# engine-process 기반 프로세스 격리 러너
+lingo locales/ko.json --runtime engine-process
+
+# 환경 변수로 전역 제어
+export LINGO_RUNTIME_PROVIDER=langgraph
+```
+
+### 2. 크로스 런타임 벤치마킹 (`RuntimeRegistry.benchmark_runtimes`)
+동일한 작업(`TranslationTask`)에 대해 `langgraph`와 `engine-process`를 나란히 실행하고 소요 시간, QA 점수, 재시도 횟수를 비교 분석할 수 있습니다.
+
+### 3. MCP(Model Context Protocol) 표준 도구
+런타임과 독립적으로 호출 가능한 핵심 도구군을 제공합니다:
+- `mcp_glossary_lookup`: 프로필별 용어 및 금지어 조회
+- `mcp_lint_translation`: ICU 변수, HTML 태그, 금지 구문 무결성 검증
+- `mcp_article_blocks_transform`: 뉴스룸 에디토리얼 1열 본문(`ArticleBlock[]`) 구조 보존 치환
+
+
 - **하드코딩 방지**: 모든 용어와 스타일 지침은 YAML 파일로 선언적 관리.
 - **번역 메모리(TM) 격리**: 동일한 한국어 문장이라도 프로필(네임스페이스)별로 분리 저장되어 컨텍스트 오염을 방지.
 

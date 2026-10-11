@@ -28,3 +28,7 @@ def test_build_parser_options():
     args_check = parse_args(["check", "locales/ko.json"])
     assert args_check.command == "check"
     assert str(args_check.target) == "locales/ko.json"
+
+    # 4. runtime 옵션 명시
+    args_rt = parse_args(["translate", "locales/ko.json", "--runtime", "engine-process"])
+    assert args_rt.runtime == "engine-process"
