@@ -8,7 +8,10 @@
 
 ## 2. 런타임 오케스트레이션
 
-- LangGraph, engine-process, Mock은 `BaseRuntimeProvider` 계약 뒤에서 교체한다.
+- 검증된 Provider 호출 경계는 `소비자 코드 → RuntimeRegistry.get_provider(name) → BaseRuntimeProvider.execute(task) → 선택된 런타임`이다.
+- 소비자 코드는 engine-process의 `/v1/process/*`를 직접 호출하지 않는다. `EngineProcessRuntimeProvider`가 Provider 내부에서 해당 HTTP/CLI 어댑터를 소유하며 upstream으로 직접 요청한다.
+- **현재 `lingo` CLI는 이 Provider 경로에 아직 연결되지 않았다.** CLI의 `--runtime`은 환경변수만 설정하고 JSON/Markdown 어댑터는 `translate.run_pipeline()`을 호출한다. CLI Provider 통합 전에는 CLI 실행을 Provider 실행으로 보고하지 않는다.
+- LangGraph, engine-process, Mock 또는 사용자 정의 Provider는 `BaseRuntimeProvider` 계약 뒤에서 교체할 수 있다. Provider 구현은 지연 import하며 특정 런타임을 필수 의존성으로 전제하지 않는다. Provider 직접 호출/단위 테스트와 실제 CLI·웹 데모 경로를 구분한다.
 - MCP 도구는 런타임 공급자와 분리하고, `ArticleBlock[]` 구조·ICU 변수·HTML 태그·용어집 제약을 보존한다.
 - 실제 번역·QA·벤치마크 결과와 단위 테스트·Mock 결과를 구분해 보고한다. Newsroom 저장소의 컨테이너 배포만으로 Lingo CLI의 실행 증거를 만들지 않는다.
 

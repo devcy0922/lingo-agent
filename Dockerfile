@@ -11,7 +11,7 @@ RUN corepack enable && corepack prepare pnpm@10.34.5 --activate \
 FROM python:3.12-slim AS runtime
 WORKDIR /app
 
-ARG LINGO_VERSION=1.2.0
+ARG LINGO_VERSION=1.3.0
 ARG LINGO_GIT_SHA=unknown
 
 COPY backend/requirements.txt ./backend/requirements.txt

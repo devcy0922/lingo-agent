@@ -101,3 +101,17 @@ def test_runtime_benchmark_comparison(sample_task):
     assert report["comparison"][0]["qa_score"] == 4.2
     assert report["comparison"][1]["provider"] == "mock_b"
     assert report["comparison"][1]["qa_score"] == 4.9
+
+
+def test_registry_default_is_environment_aware(monkeypatch):
+    """명시된 Provider 설정이 기본 선택보다 우선한다."""
+    monkeypatch.setenv("LINGO_RUNTIME_PROVIDER", "mock")
+    provider = RuntimeRegistry.get_provider()
+    assert provider.name == "mock"
+
+
+def test_registry_benchmark_does_not_assume_two_runtimes(monkeypatch, sample_task):
+    """Provider 목록을 생략해도 LangGraph와 engine-process 동시 설치를 요구하지 않는다."""
+    monkeypatch.setenv("LINGO_RUNTIME_PROVIDER", "mock")
+    report = RuntimeRegistry.benchmark_runtimes(sample_task)
+    assert [row["provider"] for row in report["comparison"]] == ["mock"]
