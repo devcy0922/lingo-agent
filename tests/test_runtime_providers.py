@@ -39,13 +39,28 @@ def test_mock_runtime_provider(sample_task):
     assert result.translated_payload["headline"] == "[EN] K-뷰티 스킨케어 혁신"
 
 
-def test_engine_process_runtime_fallback(sample_task):
+def test_engine_process_runtime_unavailable_is_not_success(sample_task):
     provider = EngineProcessRuntimeProvider(endpoint_url="http://127.0.0.1:9999")
     result = provider.execute(sample_task)
 
-    assert result.is_success
+    assert not result.is_success
     assert result.provider == "engine-process"
     assert result.metrics.total_duration_ms > 0
+    assert result.status == "ERROR"
+    assert result.qa_report["status"] == "UNAVAILABLE"
+    assert result.qa_report["evidence"]["fallback_used"] is False
+
+
+def test_engine_process_explicit_fallback_is_degraded(sample_task):
+    provider = EngineProcessRuntimeProvider(
+        endpoint_url="http://127.0.0.1:9999",
+        allow_fallback=True,
+    )
+    result = provider.execute(sample_task)
+
+    assert result.status == "DEGRADED"
+    assert not result.is_success
+    assert result.qa_report["evidence"]["fallback_used"] is True
     assert "[EN]" in result.translated_payload["headline"]
 
 

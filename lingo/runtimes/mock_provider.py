@@ -68,7 +68,15 @@ class MockRuntimeProvider(BaseRuntimeProvider):
             status=self.force_status,
             provider=self.name,
             translated_payload=out_payload,
-            qa_report={"score": self.force_qa_score, "advisory": "mock"},
+            qa_report={
+                "score": self.force_qa_score,
+                "advisory": "mock",
+                "evidence": {
+                    "mode": "deterministic_mock",
+                    "live_runtime": False,
+                    "fallback_used": False,
+                },
+            },
             metrics=RuntimeMetrics(
                 total_duration_ms=total_ms,
                 item_count=1,

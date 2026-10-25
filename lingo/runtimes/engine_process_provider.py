@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import json
 import logging
 import os
 import time
+import uuid
 from typing import Any, Dict, Iterator, List, Optional
 
 import httpx
@@ -27,10 +29,12 @@ class EngineProcessRuntimeProvider(BaseRuntimeProvider):
         endpoint_url: Optional[str] = None,
         auth_token: Optional[str] = None,
         timeout: float = 60.0,
+        allow_fallback: bool = False,
     ):
-        self.endpoint_url = endpoint_url or os.getenv("CY_PROCESS_URL", "http://127.0.0.1:8000")
-        self.auth_token = auth_token or os.getenv("CY_PROCESS_AUTH_TOKEN", "")
+        self.endpoint_url = endpoint_url or os.getenv("CY_PROCESS_URL", "http://127.0.0.1:8095")
+        self.auth_token = auth_token or os.getenv("CY_PROCESS_AUTH_TOKEN") or os.getenv("CY_PROCESS_HTTP_TOKEN", "")
         self.timeout = timeout
+        self.allow_fallback = allow_fallback
 
     @property
     def name(self) -> str:
@@ -68,81 +72,182 @@ class EngineProcessRuntimeProvider(BaseRuntimeProvider):
         if self.auth_token:
             headers["Authorization"] = f"Bearer {self.auth_token}"
 
+        source_json = json.dumps(task.payload, ensure_ascii=False, sort_keys=True)
+        session_id = f"lingo-benchmark-{uuid.uuid4().hex[:12]}"
+        operation_id = f"{task.task_id}-{uuid.uuid4().hex[:12]}"
         payload = {
-            "task_id": task.task_id,
-            "type": "translation_pipeline",
-            "source_lang": task.source_lang,
-            "target_lang": task.target_lang,
-            "content_type": task.content_type,
-            "payload": task.payload,
-            "metadata": task.metadata,
+            "sessionId": session_id,
+            "operationId": operation_id,
+            "responseFormat": "json_object",
+            "maxTurns": 1,
+            "message": (
+                "Translate the following Newsroom article from "
+                f"{task.source_lang} to {task.target_lang}. Return exactly one JSON object. "
+                "Preserve every key, ArticleBlock type, array length, id, slug, category, "
+                "content_type, numeric value, and metadata field. Translate only human-readable "
+                "headline, dek, paragraph/subhead/bullet text, keynumber labels and notes. "
+                "Do not add commentary outside the JSON object.\n\n"
+                f"SOURCE_ARTICLE_JSON:\n{source_json}"
+            ),
+            "customInstructions": (
+                "You are a translation runtime adapter. Preserve the input JSON schema exactly. "
+                f"Use target language {task.target_lang}."
+            ),
         }
 
         t0 = time.time()
         try:
-            emit("dispatch", "INFO", "engine-process 작업 제출 (/v1/process/jobs)")
+            emit("dispatch", "INFO", "engine-process 작업 제출 (/v1/process/runs)")
             # HTTP 엔드포인트 호출 시도
             resp = None
             try:
                 with httpx.Client(timeout=self.timeout) as client:
                     resp = client.post(
-                        f"{self.endpoint_url.rstrip('/')}/v1/process/jobs",
+                        f"{self.endpoint_url.rstrip('/')}/v1/process/runs",
                         headers=headers,
                         json=payload,
                     )
             except Exception as net_err:
-                logger.info(f"engine-process 데몬 직결 불가 (로컬 시뮬레이션/어댑터 모드 가동): {net_err}")
+                logger.info(f"engine-process 데몬 직결 실패: {net_err}")
 
             stage_durations["dispatch"] = (time.time() - t0) * 1000.0
 
             if resp and resp.is_success:
                 res_data = resp.json()
                 t1 = time.time()
-                emit("execute", "INFO", "engine-process 작업 완료 수신", data={"job_id": res_data.get("job_id")})
+                emit(
+                    "execute",
+                    "INFO",
+                    "engine-process 작업 완료 수신",
+                    data={"run_id": res_data.get("runId"), "operation_id": res_data.get("operationId")},
+                )
                 stage_durations["execute"] = (time.time() - t1) * 1000.0
 
+                raw_output = res_data.get("response")
+                translated_payload = raw_output
+                output_error: Optional[str] = None
+                if isinstance(raw_output, str):
+                    try:
+                        translated_payload = json.loads(raw_output)
+                    except json.JSONDecodeError:
+                        output_error = "engine-process returned non-JSON translation output"
+                elif not isinstance(raw_output, dict):
+                    output_error = "engine-process response field is not a JSON object"
+
+                upstream_error = bool(res_data.get("isError"))
+                if upstream_error:
+                    output_error = "engine-process reported an execution error"
+                token_usage = {
+                    key: res_data[key]
+                    for key in ("inputTokens", "outputTokens")
+                    if isinstance(res_data.get(key), int)
+                }
+                total_ms = (time.time() - start_time) * 1000.0
+                execution_status = "ERROR" if output_error else "SUCCESS"
+                metrics = RuntimeMetrics(
+                    total_duration_ms=float(res_data.get("durationMs", total_ms)),
+                    stage_durations_ms=stage_durations,
+                    item_count=res_data.get("item_count", 1),
+                    passed_item_count=1 if execution_status == "SUCCESS" else 0,
+                    failed_item_count=1 if execution_status != "SUCCESS" else 0,
+                    token_usage=token_usage,
+                )
+                qa_report = {
+                    "status": "UNVERIFIED" if execution_status == "SUCCESS" else "ERROR",
+                    "quality_verified": False,
+                    "adapter": "engine-process-http",
+                }
+                qa_report["evidence"] = {
+                    "mode": "engine-process-http",
+                    "live_runtime": True,
+                    "upstream_reachable": True,
+                    "fallback_used": False,
+                    "upstream_http_status": resp.status_code,
+                }
+                return TranslationResult(
+                    task_id=task.task_id,
+                    status=execution_status,
+                    provider=self.name,
+                    translated_payload=translated_payload if output_error is None else None,
+                    qa_report=qa_report,
+                    metrics=metrics,
+                    events=events,
+                    error_message=output_error,
+                )
+
+            upstream_reason = (
+                "engine-process endpoint unavailable"
+                if resp is None
+                else f"engine-process returned HTTP {resp.status_code}"
+            )
+
+            # 로컬 어댑터는 명시적으로 요청한 경우에만 실행하며, 결과를
+            # 승인 가능한 성공 번역으로 승격하지 않는다.
+            if self.allow_fallback:
+                t_fb = time.time()
+                emit(
+                    "fallback_runner",
+                    "WARN",
+                    "engine-process 연결 실패로 로컬 어댑터 실행",
+                    data={"fallback_used": True, "reason": upstream_reason},
+                )
+                fallback_out = self._run_process_fallback(task)
+                stage_durations["fallback_runner"] = (time.time() - t_fb) * 1000.0
                 total_ms = (time.time() - start_time) * 1000.0
                 metrics = RuntimeMetrics(
                     total_duration_ms=total_ms,
                     stage_durations_ms=stage_durations,
-                    item_count=res_data.get("item_count", 1),
-                    passed_item_count=res_data.get("passed_count", 1),
-                    qa_score=float(res_data.get("qa_score", 4.0)),
+                    item_count=1,
+                    failed_item_count=1,
                 )
+                emit("completed", "WARN", "로컬 어댑터 결과는 DEGRADED로 기록")
                 return TranslationResult(
                     task_id=task.task_id,
-                    status=res_data.get("status", "SUCCESS"),
+                    status="DEGRADED",
                     provider=self.name,
-                    translated_payload=res_data.get("output"),
-                    qa_report=res_data.get("qa_report", {}),
+                    translated_payload=fallback_out,
+                    qa_report={
+                        "status": "DEGRADED",
+                        "adapter": "engine-process-local",
+                        "fallback_used": True,
+                        "evidence": {
+                            "mode": "local_adapter",
+                            "live_runtime": False,
+                            "fallback_used": True,
+                        },
+                        "reason": upstream_reason,
+                    },
                     metrics=metrics,
                     events=events,
+                    error_message=upstream_reason,
                 )
 
-            # 엔드포인트 미구동 시: 벤치마킹 및 분리 격리를 위한 프로세스 호환 폴백 실행
-            t_fb = time.time()
-            emit("fallback_runner", "WARN", "engine-process 표준 프로세스 어댑터 가동")
-            fallback_out = self._run_process_fallback(task)
-            stage_durations["fallback_runner"] = (time.time() - t_fb) * 1000.0
-
             total_ms = (time.time() - start_time) * 1000.0
-            metrics = RuntimeMetrics(
-                total_duration_ms=total_ms,
-                stage_durations_ms=stage_durations,
-                item_count=1,
-                passed_item_count=1,
-                qa_score=3.8,
-            )
-
-            emit("completed", "INFO", "engine-process 어댑터 완료", data={"metrics": metrics.to_dict()})
+            emit("error", "ERROR", upstream_reason)
             return TranslationResult(
                 task_id=task.task_id,
-                status="SUCCESS",
+                status="ERROR",
                 provider=self.name,
-                translated_payload=fallback_out,
-                qa_report={"status": "PASSED", "adapter": "engine-process-local"},
-                metrics=metrics,
+                qa_report={
+                    "status": "UNAVAILABLE",
+                    "adapter": "engine-process-http",
+                    "fallback_used": False,
+                    "evidence": {
+                        "mode": "engine-process-http",
+                        "live_runtime": False,
+                        "upstream_reachable": resp is not None,
+                        "fallback_used": False,
+                        **({"upstream_http_status": resp.status_code} if resp is not None else {}),
+                    },
+                },
+                metrics=RuntimeMetrics(
+                    total_duration_ms=total_ms,
+                    stage_durations_ms=stage_durations,
+                    item_count=1,
+                    failed_item_count=1,
+                ),
                 events=events,
+                error_message=upstream_reason,
             )
 
         except Exception as e:

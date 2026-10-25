@@ -32,3 +32,16 @@ def test_build_parser_options():
     # 4. runtime 옵션 명시
     args_rt = parse_args(["translate", "locales/ko.json", "--runtime", "engine-process"])
     assert args_rt.runtime == "engine-process"
+
+    args_bench = parse_args([
+        "benchmark-newsroom",
+        "/tmp/newsroom-mock.json",
+        "--providers",
+        "mock",
+        "engine-process",
+        "--content-type",
+        "launch",
+    ])
+    assert args_bench.command == "benchmark-newsroom"
+    assert str(args_bench.fixture) == "/tmp/newsroom-mock.json"
+    assert args_bench.providers == ["mock", "engine-process"]

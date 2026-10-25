@@ -111,6 +111,7 @@ class RuntimeRegistry:
                 "retry_count": res.metrics.retry_count,
                 "item_count": res.metrics.item_count,
                 "stage_durations": res.metrics.stage_durations_ms,
+                "token_usage": res.metrics.token_usage,
                 "error": res.error_message,
             })
 

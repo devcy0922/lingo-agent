@@ -268,7 +268,7 @@ flowchart TD
 ### B. 런타임 관측성 및 벤치마킹 (`RuntimeRegistry.benchmark_runtimes`)
 - **이벤트 방출 (`RuntimeEvent`)**: `init`, `dispatch`, `draft_translate`, `lint`, `qa_judge`, `assemble`, `completed`, `error` 등 노드 단위 실시간 스트리밍.
 - **메트릭 (`RuntimeMetrics`)**: 전체 소요 시간(`total_duration_ms`), 단계별 지연(`stage_durations_ms`), 재시도 횟수, QA 평균 점수 기록.
-- **벤치마크**: 동일한 `TranslationTask`에 대해 현재 환경에 등록된 Provider 목록을 명시해 성능/비용/품질 비교 리포트 생성. `langgraph`와 `engine-process` 동시 실행은 두 Provider가 실제 설치·등록된 환경에서만 수행.
+- **벤치마크**: 동일한 `TranslationTask`에 대해 현재 환경에 등록된 Provider 목록을 명시해 성능/비용/품질 비교 리포트 생성. 비용은 Provider가 반환한 `token_usage` 근거만 사용하며, 금액을 임의 추정하지 않는다. `langgraph`와 `engine-process` 동시 실행은 두 Provider가 실제 설치·등록된 환경에서만 수행.
 
 ### C. Newsroom 기사 블록 보존 (`NewsroomArticleAdapter`)
 - 뉴스룸의 에디토리얼 1열 본문(`headline`, `dek`, `body: ArticleBlock[]`, `keynumbers`) 구조를 손상 없이 분해·재조립.
@@ -285,6 +285,29 @@ Consumer → RuntimeRegistry.get_provider(name)
          → 선택된 Runtime
 ```
 
-`EngineProcessRuntimeProvider`가 선택된 구성에서만 해당 Provider가 engine-process `/v1/process/jobs` 호출을 소유한다. 따라서 소비자와 engine-process 사이에는 Provider 경계가 있지만, Provider 자체가 upstream engine-process로 직접 HTTP 요청하는 것은 의도된 어댑터 동작이다. Registry는 concrete Provider를 지연 import하므로 engine-process-only 환경이 LangGraph import에 실패하지 않는다. LangGraph가 선택되면 `langgraph-process`의 Provider facade를 통해 외부 구현을 사용한다.
+`EngineProcessRuntimeProvider`가 선택된 구성에서만 해당 Provider가 engine-process `/v1/process/runs` 호출을 소유한다. 따라서 소비자와 engine-process 사이에는 Provider 경계가 있지만, Provider 자체가 upstream engine-process로 직접 HTTP 요청하는 것은 의도된 어댑터 동작이다. Registry는 concrete Provider를 지연 import하므로 engine-process-only 환경이 LangGraph import에 실패하지 않는다. LangGraph가 선택되면 `langgraph-process`의 Provider facade를 통해 외부 구현을 사용한다.
 
 현재 `lingo` CLI의 JSON/Markdown 경로는 이 계약을 아직 사용하지 않는다. `cli.py`의 `--runtime`은 환경변수만 설정하고, `JsonAdapter`·`MarkdownAdapter`·`OpenApiAdapter`는 레거시 `translate.run_pipeline()`을 호출한다. Provider 직접 테스트가 통과했다는 사실을 CLI Provider 통합 또는 실제 engine-process 호출 증거로 확대 해석하지 않는다.
+
+## 12. Newsroom 목업 벤치마크 레인
+
+Newsroom은 DB 쓰기·외부 모델 호출·기사 발행 없이 결정론적인 `newsroom.mock.v1` 보고서를 생성한다. Lingo는 그 보고서의 `cases[].article`만 읽어 도메인 어댑터와 명시적으로 지정된 Provider를 실행한다.
+
+```mermaid
+flowchart LR
+    Fixture[Newsroom mock report\nnewsroom.mock.v1] --> Load[fixture hash + case 선택]
+    Load --> Adapter[NewsroomArticleAdapter.to_task]
+    Adapter --> Registry[RuntimeRegistry.benchmark_runtimes]
+    Registry --> Mock[mock Provider]
+    Registry --> Engine[engine-process Provider\n명시적 선택 시에만]
+    Mock --> Evidence[Provider status + metrics +\nArticleBlock 보존 검증]
+    Engine --> Evidence
+    Evidence --> Report[벤치마크 JSON\n실행/폴백/미연결 구분]
+```
+
+벤치마크 레인의 불변조건은 다음과 같다.
+
+1. 기본 Provider는 `mock` 하나이며, `engine-process`와 `langgraph`는 호출자가 명시한 경우에만 선택한다.
+2. fixture SHA-256, 선택 케이스, 대상 언어, Provider 목록을 결과에 남긴다. 원문과 결과 payload는 기본 요약 보고서에 복사하지 않는다.
+3. engine-process HTTP 연결 실패는 `ERROR`, 명시적인 로컬 어댑터 폴백은 `DEGRADED`로 기록한다. 어느 경우도 성공 번역이나 승인 가능 결과로 승격하지 않는다.
+4. 속도는 Provider 지연과 단계별 시간, 비용은 Provider `token_usage`가 있을 때만, 품질은 별도 QA 근거가 있을 때만 보고한다. `ArticleBlock[]`의 block type과 개수, 어댑터의 기사 식별자를 확인하지만 이 레인은 실제 번역 품질·실제 발행·실제 engine-process 실행을 대신하지 않는다.

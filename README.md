@@ -95,7 +95,21 @@ Provider 호출 경계는 `소비자 → RuntimeRegistry → 선택된 Provider 
 ### 2. 크로스 런타임 벤치마킹 (`RuntimeRegistry.benchmark_runtimes`)
 동일한 작업(`TranslationTask`)에 대해 **현재 환경에 등록된 Provider만** 나란히 실행하고 소요 시간, QA 점수, 재시도 횟수를 비교 분석할 수 있습니다. 두 런타임이 모두 있는 환경에서만 `langgraph`와 `engine-process`를 함께 지정합니다.
 
-### 3. MCP(Model Context Protocol) 표준 도구
+### 3. Newsroom 목업 fixture 벤치마크
+
+Newsroom의 `newsroom.mock.v1` JSON 보고서를 Lingo의 기사 어댑터와 명시적인 Provider에 연결할 수 있습니다. 기본값은 결정론적 `mock` Provider이며, engine-process는 실제 엔드포인트를 검증할 때만 명시합니다.
+
+```bash
+# Newsroom에서 생성한 fixture를 구조/어댑터 계약과 함께 검증
+lingo benchmark-newsroom /tmp/newsroom-mock.json --category skincare --content-type launch --pretty
+
+# 두 Provider를 비교할 때만 명시적으로 선택
+lingo benchmark-newsroom /tmp/newsroom-mock.json --providers mock engine-process --output benchmark.json
+```
+
+보고서에는 fixture SHA-256, 선택 케이스, Provider별 상태·지연·QA 메타데이터, `ArticleBlock[]` 보존 결과가 포함됩니다. 비용은 Provider가 반환한 `token_usage`가 있을 때만 보고하며, mock에서는 `not_reported`입니다. 원문 payload는 요약 보고서에 복사하지 않습니다. 연결 실패는 `ERROR`, 명시적 로컬 어댑터 폴백은 `DEGRADED`이며 성공으로 승격하지 않습니다. 이 레인은 실제 번역 품질, 실제 engine-process 실행, 기사 발행을 증명하지 않습니다.
+
+### 4. MCP(Model Context Protocol) 표준 도구
 런타임과 독립적으로 호출 가능한 핵심 도구군을 제공합니다:
 - `mcp_glossary_lookup`: 프로필별 용어 및 금지어 조회
 - `mcp_lint_translation`: ICU 변수, HTML 태그, 금지 구문 무결성 검증

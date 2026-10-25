@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import sys
 from pathlib import Path
@@ -9,6 +10,7 @@ from typing import List, Optional
 from lingo.adapters.json_adapter import JsonAdapter
 from lingo.adapters.markdown_adapter import MarkdownAdapter
 from lingo.adapters.openapi_adapter import OpenApiAdapter, is_openapi_document
+from lingo.benchmarks.newsroom import benchmark_newsroom_fixture
 from lingo.config import load_config
 
 logging.basicConfig(
@@ -55,6 +57,25 @@ def build_parser() -> argparse.ArgumentParser:
     check_p.add_argument("-p", "--profile", type=str, help="적용할 프로필")
     check_p.add_argument("-c", "--config", type=Path, help="설정 파일 경로 (.lingo.yml)")
 
+    # 3. Newsroom fixture 기반 Provider 벤치마크
+    bench_p = subparsers.add_parser(
+        "benchmark-newsroom",
+        help="Newsroom mock fixture를 명시한 런타임 Provider로 벤치마크",
+    )
+    bench_p.add_argument("fixture", type=Path, help="Newsroom newsroom.mock.v1 JSON 보고서")
+    bench_p.add_argument("--category", type=str, help="선택할 기사 category")
+    bench_p.add_argument("--content-type", type=str, help="선택할 Newsroom content type")
+    bench_p.add_argument("--target-lang", default="en", help="대상 언어 코드 (기본값: en)")
+    bench_p.add_argument("--profile", default="tech_blog", help="Lingo 프로필 (기본값: tech_blog)")
+    bench_p.add_argument(
+        "--providers",
+        nargs="+",
+        default=["mock"],
+        help="실행할 Provider 목록. 기본값 mock; 여러 개 또는 쉼표 구분",
+    )
+    bench_p.add_argument("--output", type=Path, help="JSON 보고서 저장 경로")
+    bench_p.add_argument("--pretty", action="store_true", help="JSON을 들여쓰기해 출력")
+
     return parser
 
 
@@ -64,7 +85,15 @@ def preprocess_argv(argv: Optional[List[str]]) -> List[str]:
     if not args:
         return args
 
-    known_subcommands = {"translate", "check", "-h", "--help", "-v", "--version"}
+    known_subcommands = {
+        "translate",
+        "check",
+        "benchmark-newsroom",
+        "-h",
+        "--help",
+        "-v",
+        "--version",
+    }
     if args[0] not in known_subcommands:
         args = ["translate"] + args
     return args
@@ -99,6 +128,41 @@ def main(argv: Optional[List[str]] = None) -> int:
     adjusted_argv = preprocess_argv(argv)
     args = parser.parse_args(adjusted_argv)
 
+    if args.command == "benchmark-newsroom":
+        providers = [
+            provider.strip()
+            for raw_provider in args.providers
+            for provider in raw_provider.split(",")
+            if provider.strip()
+        ]
+        try:
+            benchmark = benchmark_newsroom_fixture(
+                args.fixture,
+                target_lang=args.target_lang,
+                profile_name=args.profile,
+                providers=providers,
+                category=args.category,
+                content_type=args.content_type,
+            )
+        except (OSError, ValueError) as exc:
+            print(
+                json.dumps(
+                    {
+                        "schemaVersion": "lingo.newsroom-benchmark.v1",
+                        "status": "ERROR",
+                        "error": str(exc),
+                    },
+                    ensure_ascii=False,
+                )
+            )
+            return 3
+
+        indent = 2 if args.pretty else None
+        rendered = json.dumps(benchmark, ensure_ascii=False, indent=indent)
+        if args.output:
+            args.output.write_text(rendered + "\n", encoding="utf-8")
+        print(rendered)
+        return 0 if benchmark["status"] == "PASSED" else 1
 
     # 서브커맨드와 루트 인자 통합
     target_path = getattr(args, "path", None) or getattr(args, "source", None) or args.target
