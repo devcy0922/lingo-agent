@@ -16,16 +16,10 @@ services:
       OUTPUT_DIR: ../data/output
     volumes:
       - lingo_data:/app/data
+    # Edge 라우트는 라벨이 아니라 admin 요청으로 만든 edge-infra vhost(nginx/config/conf.d/lingo.conf)가 맡는다.
+    # 컨테이너에 edge.* 라벨을 다시 붙이지 않는다(2026-11-11, edge-controller 승인센터 중단).
     networks:
       - shared_ai_net
-    labels:
-      edge.enable: "true"
-      edge.id: "lingo-agent"
-      edge.name: "LingoAgent"
-      edge.domain: "lingo.govail.cloud"
-      edge.port: "47081"
-      edge.sso: "true"
-      edge.health_path: "/healthz"
 
 networks:
   shared_ai_net:
